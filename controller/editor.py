@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import hashlib
 import uuid
 from pathlib import Path
 from typing import Any
 
+from compiler.ffmpeg import extract_clip_thumbnail
 from compiler.ffmpeg import render as ffmpeg_render
 from compiler.ffprobe import probe
 from model.history import HistoryManager
@@ -466,6 +468,7 @@ class EditorController:
                     "source_id": clip.source_id,
                     "source_path": source.path if source else None,
                     "in_sec": clip.in_sec,
+                    "trim_start": clip.in_sec,
                     "out_sec": clip.out_sec,
                     "duration_sec": round(clip.duration, 3),
                     "speed": clip.speed,
@@ -531,6 +534,40 @@ class EditorController:
             "can_undo": self.history.can_undo(),
             "can_redo": self.history.can_redo(),
         }
+
+    def get_clip_thumbnail(self, index: int) -> Path:
+        """Palauta klipin aloitusframen pikkukuva (1-pohjainen indeksi).
+
+        Välimuistittaa JPEG-kuvan workspace/thumbnails/ -kansioon avaimella
+        (lähdepolku + mtime + trim_start).
+        """
+        if index < 1:
+            raise IndexError(
+                f"clip index must be 1-based (got {index}); first clip is 1"
+            )
+        clip = self._clip(index - 1)
+        source = self.timeline.sources.get(clip.source_id)
+        if source is None:
+            raise KeyError(f"unknown source_id {clip.source_id!r}")
+
+        source_path = Path(source.path)
+        trim_start = float(clip.in_sec)
+        try:
+            mtime = source_path.stat().st_mtime if source_path.is_file() else 0.0
+        except OSError:
+            mtime = 0.0
+
+        digest = hashlib.sha256(
+            f"{source_path.resolve()}|{mtime:.6f}|{trim_start:.6f}".encode()
+        ).hexdigest()[:16]
+        thumb_dir = Path(self.workspace) / "thumbnails"
+        thumb_dir.mkdir(parents=True, exist_ok=True)
+        output_path = thumb_dir / f"{digest}.jpg"
+
+        if output_path.is_file() and output_path.stat().st_size > 0:
+            return output_path
+
+        return extract_clip_thumbnail(source_path, trim_start, output_path)
 
     def render(self, mode: str = "preview") -> str:
         if mode not in ("preview", "final"):

@@ -476,3 +476,48 @@ def render(
         detail = (result.stderr or result.stdout or "").strip()
         raise RuntimeError(f"ffmpeg render failed:\n{detail}")
     return str(output_path)
+
+
+def extract_clip_thumbnail(
+    source_path: Path,
+    timestamp: float,
+    output_path: Path,
+) -> Path:
+    """Poimi yksittäinen aloitusruutu JPEG-pikkukuvaksi (LC_ALL=C)."""
+    source_path = Path(source_path)
+    output_path = Path(output_path)
+    if not source_path.is_file():
+        raise FileNotFoundError(f"video source not found: {source_path}")
+    if timestamp < 0:
+        raise ValueError("timestamp must be >= 0")
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    cmd = [
+        "ffmpeg",
+        "-y",
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-ss",
+        f"{timestamp:.6f}",
+        "-i",
+        str(source_path),
+        "-vframes",
+        "1",
+        "-vf",
+        "scale=160:-1",
+        "-q:v",
+        "4",
+        str(output_path),
+    ]
+    result = subprocess.run(
+        cmd,
+        capture_output=True,
+        text=True,
+        env=_env(),
+        check=False,
+    )
+    if result.returncode != 0 or not output_path.is_file():
+        detail = (result.stderr or result.stdout or "").strip()
+        raise RuntimeError(f"thumbnail extraction failed:\n{detail}")
+    return output_path

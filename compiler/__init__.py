@@ -3,6 +3,7 @@
 from compiler.ffmpeg import (
     build_command,
     build_filter_complex,
+    extract_clip_thumbnail,
     nvenc_available,
     render,
     resolve_font_file,
@@ -13,6 +14,7 @@ from compiler.ffprobe import probe
 __all__ = [
     "build_command",
     "build_filter_complex",
+    "extract_clip_thumbnail",
     "nvenc_available",
     "probe",
     "render",

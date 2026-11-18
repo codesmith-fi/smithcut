@@ -206,6 +206,29 @@ def create_app(
             dest.unlink(missing_ok=True)
             return _error(exc)
 
+    @app.get("/api/clips/{index}/thumbnail")
+    def api_clip_thumbnail(index: int, v: float | None = Query(default=None)):
+        """Palauta klipin aloitusframen JPEG (1-pohjainen indeksi)."""
+        editor = get_editor()
+        try:
+            path = editor.get_clip_thumbnail(index)
+        except IndexError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except (KeyError, FileNotFoundError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+        headers = {"Cache-Control": "no-cache"}
+        if v is not None:
+            headers["X-Trim-Start"] = str(v)
+        return FileResponse(
+            path=path,
+            media_type="image/jpeg",
+            filename=path.name,
+            headers=headers,
+        )
+
     @app.post("/api/clips", response_model=None)
     def api_clips(body: ClipRequest, lang: str = Query(default="fi")):
         editor = get_editor()

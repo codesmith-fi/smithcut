@@ -162,7 +162,18 @@ function renderClipStrip() {
       })
       .join("");
 
+    const trimStart = clip.trim_start ?? clip.in_sec ?? 0;
+    const thumbUrl = `/api/clips/${clip.index}/thumbnail?v=${encodeURIComponent(trimStart)}`;
     card.innerHTML = `
+      <div class="clip-thumb-wrap">
+        <img
+          class="clip-thumb"
+          src="${thumbUrl}"
+          alt=""
+          loading="lazy"
+          draggable="false"
+        />
+      </div>
       <h3>${clip.title || t("clipTitle", { n: clip.index })}</h3>
       <div class="duration">${formatSeconds(clip.duration_sec)}</div>
       <div class="effect-tags">${effects || `<span class="tag">${t("noEffects")}</span>`}</div>
@@ -171,6 +182,13 @@ function renderClipStrip() {
         <button type="button" class="danger" data-act="remove">${t("remove")}</button>
       </div>
     `;
+    const thumb = card.querySelector(".clip-thumb");
+    if (thumb) {
+      thumb.addEventListener("error", () => {
+        thumb.classList.add("is-missing");
+        thumb.removeAttribute("src");
+      });
+    }
 
     card.addEventListener("click", (ev) => {
       if (ev.target.closest("button")) return;
