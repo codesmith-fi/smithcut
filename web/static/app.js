@@ -34,6 +34,7 @@ const els = {
   textForm: document.getElementById("text-form"),
   textValue: document.getElementById("text-value"),
   textPosition: document.getElementById("text-position"),
+  textFontStyle: document.getElementById("text-font-style"),
   textCancel: document.getElementById("text-cancel"),
 };
 
@@ -576,7 +577,11 @@ function wireEvents() {
       showReply(data.reply || t("ready"));
       if (data.state) applyState(data.state);
       els.commandInput.value = "";
-      setStatus(t("ready"));
+      if (data.changed && (state.summary?.clips?.length || 0) > 0) {
+        await runRender("preview");
+      } else {
+        setStatus(t("ready"));
+      }
     } catch (err) {
       setStatus(t("ready"));
       showReply(err.message);
@@ -600,6 +605,7 @@ function wireEvents() {
           start_sec: 0,
           duration: 2,
           position: els.textPosition.value,
+          font_style: els.textFontStyle?.value || "clean",
         }),
       })
     );

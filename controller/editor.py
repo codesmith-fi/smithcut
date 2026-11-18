@@ -366,15 +366,20 @@ class EditorController:
         start_sec: float,
         duration: float,
         position: str = "bottom",
+        font_style: str = "clean",
     ) -> TextEffect:
         clip = self._clip(clip_index)
         if position not in ("bottom", "top", "center"):
             raise ValueError(f"invalid position {position!r}")
+        allowed_fonts = {"clean", "cinema", "mono", "impact"}
+        if font_style not in allowed_fonts:
+            raise ValueError(f"invalid font_style {font_style!r}")
         effect = TextEffect(
             text=text,
             start_sec=start_sec,
             duration=duration,
             position=position,  # type: ignore[arg-type]
+            font_style=font_style,  # type: ignore[arg-type]
         )
         if effect.start_sec + effect.duration > clip.duration + 1e-9:
             raise ValueError("text effect exceeds clip duration")
@@ -449,6 +454,7 @@ class EditorController:
                             "start_sec": effect.start_sec,
                             "duration": effect.duration,
                             "position": effect.position,
+                            "font_style": effect.font_style,
                         }
                     )
             clip_index = i + 1

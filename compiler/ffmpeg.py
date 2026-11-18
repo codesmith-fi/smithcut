@@ -98,6 +98,105 @@ def _escape_drawtext(text: str) -> str:
     )
 
 
+# Fonttityylit → ehdokaspolut / fontconfig-nimet (Linux).
+_FONT_STYLE_PATHS: dict[str, list[str]] = {
+    "clean": [
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+        "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
+        "/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf",
+    ],
+    "cinema": [
+        "/usr/share/fonts/truetype/dejavu/DejaVuSerif.ttf",
+        "/usr/share/fonts/truetype/liberation/LiberationSerif-Regular.ttf",
+        "/usr/share/fonts/truetype/gentium/Gentium-R.ttf",
+        "/usr/share/fonts/truetype/crosextra/Caladea-Regular.ttf",
+    ],
+    "mono": [
+        "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf",
+        "/usr/share/fonts/truetype/liberation/LiberationMono-Regular.ttf",
+        "/usr/share/fonts/truetype/freefont/FreeMono.ttf",
+    ],
+    "impact": [
+        "/usr/share/fonts/truetype/msttcorefonts/Impact.ttf",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+        "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
+        "/usr/share/fonts/truetype/noto/NotoSans-Bold.ttf",
+    ],
+}
+
+_FONT_STYLE_FC: dict[str, list[str]] = {
+    "clean": ["DejaVu Sans", "Liberation Sans", "Noto Sans", "sans-serif"],
+    "cinema": ["DejaVu Serif", "Liberation Serif", "Gentium", "serif"],
+    "mono": ["DejaVu Sans Mono", "Liberation Mono", "FreeMono", "monospace"],
+    "impact": ["Impact", "DejaVu Sans:style=Bold", "Liberation Sans:style=Bold", "sans-serif:style=Bold"],
+}
+
+_FONT_CACHE: dict[str, str | None] = {}
+
+
+def reset_font_cache() -> None:
+    """Testejä varten."""
+    _FONT_CACHE.clear()
+
+
+def _fc_match(query: str) -> str | None:
+    try:
+        result = subprocess.run(
+            ["fc-match", "-f", "%{file}\\n", query],
+            capture_output=True,
+            text=True,
+            env=_env(),
+            check=False,
+        )
+    except FileNotFoundError:
+        return None
+    if result.returncode != 0:
+        return None
+    path = (result.stdout or "").strip().splitlines()
+    if not path:
+        return None
+    candidate = path[0].strip()
+    if candidate and Path(candidate).is_file():
+        return candidate
+    return None
+
+
+def resolve_font_file(font_style: str = "clean") -> str | None:
+    """Palauta olemassa oleva .ttf/.otf-polku fonttityylille, tai None."""
+    style = font_style if font_style in _FONT_STYLE_PATHS else "clean"
+    if style in _FONT_CACHE:
+        return _FONT_CACHE[style]
+
+    for path in _FONT_STYLE_PATHS[style]:
+        if Path(path).is_file():
+            _FONT_CACHE[style] = path
+            return path
+
+    for query in _FONT_STYLE_FC.get(style, []):
+        matched = _fc_match(query)
+        if matched:
+            _FONT_CACHE[style] = matched
+            return matched
+
+    # Turvallinen yleisfallback – älä kaada renderöintiä
+    for fallback in (
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+        "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
+        "/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf",
+    ):
+        if Path(fallback).is_file():
+            _FONT_CACHE[style] = fallback
+            return fallback
+
+    matched = _fc_match("sans-serif")
+    _FONT_CACHE[style] = matched
+    return matched
+
+
+def _escape_fontfile(path: str) -> str:
+    return path.replace("\\", "\\\\").replace(":", "\\:").replace("'", "\\'")
+
+
 def _text_xy(position: str) -> tuple[str, str]:
     if position == "top":
         return ("(w-text_w)/2", "50")
@@ -159,10 +258,14 @@ def _effect_filters(clip: Clip, width: int, height: int, fps: int) -> list[str]:
                 f"between(t\\,{effect.start_sec}\\,"
                 f"{effect.start_sec + effect.duration})"
             )
-            parts.append(
+            draw = (
                 f"drawtext=text='{text}':fontsize={effect.font_size}"
                 f":fontcolor={effect.color}:x={x}:y={y}:enable='{enable}'"
             )
+            font_path = resolve_font_file(effect.font_style)
+            if font_path:
+                draw += f":fontfile='{_escape_fontfile(font_path)}'"
+            parts.append(draw)
     return parts
 
 

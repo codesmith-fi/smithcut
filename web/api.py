@@ -53,6 +53,7 @@ class EffectRequest(BaseModel):
     zoom_factor: float = 1.8
     text: Optional[str] = None
     position: str = "bottom"
+    font_style: Literal["clean", "cinema", "mono", "impact"] = "clean"
     transition_type: str = "fadeblack"
 
 
@@ -267,6 +268,7 @@ def create_app(
                     start_sec=body.start_sec,
                     duration=body.duration,
                     position=body.position,
+                    font_style=body.font_style,
                 )
             elif body.action == "transition":
                 if body.after_clip is None:
@@ -323,15 +325,23 @@ def create_app(
 
     @app.post("/api/chat")
     def api_chat(body: ChatRequest) -> dict[str, Any]:
-        # Vaihe 3 kytkee paikallisen LLM:n tähän.
+        from agent.llm_agent import run_agent
+
         code = _lang_from_request(body.lang)
+        editor = get_editor()
+        result = run_agent(editor, body.message, lang=code)
         return {
             "ok": True,
-            "ready": False,
+            "ready": result.ready,
             "lang": code,
-            "reply": chat_stub_reply(code),
+            "reply": result.reply,
+            "changed": result.changed,
+            "tool_calls": result.tool_calls,
+            "error": result.error,
             "echo": body.message.strip(),
-            "state": _state_payload(get_editor(), lang=code),
+            "state": _state_payload(editor, lang=code),
+            # Taaksepäin yhteensopiva stub-kenttä (Vaihe 2 testit)
+            "fallback_hint": None if result.ready else chat_stub_reply(code),
         }
 
     @app.get("/media/{file_path:path}")

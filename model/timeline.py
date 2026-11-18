@@ -29,6 +29,9 @@ class ZoomEffect(BaseModel):
     zoom_factor: float = Field(ge=1.1, le=4.0)
 
 
+FontStyle = Literal["clean", "cinema", "mono", "impact"]
+
+
 class TextEffect(BaseModel):
     type: Literal["text"] = "text"
     text: str
@@ -37,6 +40,7 @@ class TextEffect(BaseModel):
     position: Literal["bottom", "top", "center"] = "bottom"
     font_size: int = Field(default=36, gt=0)
     color: str = "white"
+    font_style: FontStyle = "clean"
 
     @field_validator("text")
     @classmethod

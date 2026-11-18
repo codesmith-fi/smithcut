@@ -213,25 +213,49 @@ def test_render_preview_and_media_range(client: TestClient, workspace: Path):
     assert len(ranged.content) == 4
 
 
-def test_chat_stub_ready_for_phase3(client: TestClient):
-    res = client.post("/api/chat", json={"message": "Lisää zoom klippiin 1", "lang": "fi"})
+def test_chat_agent_success_and_unreachable(client: TestClient):
+    from agent.llm_agent import AgentResult
+
+    with patch(
+        "agent.llm_agent.run_agent",
+        return_value=AgentResult(
+            reply="Lisäsin zoomin klippiin 1.",
+            changed=True,
+            ready=True,
+            tool_calls=["add_zoom"],
+        ),
+    ):
+        res = client.post(
+            "/api/chat",
+            json={"message": "Lisää zoom klippiin 1", "lang": "fi"},
+        )
     assert res.status_code == 200
     body = res.json()
     assert body["ok"] is True
-    assert body["ready"] is False
+    assert body["ready"] is True
+    assert body["changed"] is True
     assert body["lang"] == "fi"
-    assert "ei ole vielä kytketty" in body["reply"].lower()
+    assert "zoomin" in body["reply"].lower()
     assert body["echo"] == "Lisää zoom klippiin 1"
-    assert body["state"]["lang"] == "fi"
 
-    en = client.post(
-        "/api/chat",
-        json={"message": "Add zoom to clip 1", "lang": "en"},
-    )
+    with patch(
+        "agent.llm_agent.run_agent",
+        return_value=AgentResult(
+            reply="The local language model is not responding. Start Ollama.",
+            changed=False,
+            ready=False,
+            error="unreachable",
+        ),
+    ):
+        en = client.post(
+            "/api/chat",
+            json={"message": "Add zoom to clip 1", "lang": "en"},
+        )
     assert en.status_code == 200
     en_body = en.json()
     assert en_body["lang"] == "en"
-    assert "not connected yet" in en_body["reply"].lower()
+    assert en_body["ready"] is False
+    assert "ollama" in en_body["reply"].lower()
     assert en_body["state"]["lang"] == "en"
 
 
