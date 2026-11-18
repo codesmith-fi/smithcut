@@ -61,6 +61,8 @@ def test_mcp_lists_expected_tools(editor: EditorController):
         "redo",
         "get_state",
         "cut_timeline_range",
+        "apply_crossfade_to_selection",
+        "add_blur_to_selection",
     } <= names
     by_name = {t.name: t for t in tools}
     assert "1-based" in (by_name["add_text"].description or "")

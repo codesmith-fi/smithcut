@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Literal
 
 from model.timeline import (
+    BlurEffect,
     Clip,
     TextEffect,
     Timeline,
@@ -307,6 +308,47 @@ def _source_input_map(timeline: Timeline) -> tuple[list[str], dict[str, int]]:
     return paths, index_by_id
 
 
+def _gblur_step_filters(effect: BlurEffect, *, steps: int = 5) -> list[str]:
+    """Portaittainen gblur focus-in / hold / focus-out (enable=between)."""
+    start = float(effect.start_sec)
+    end = float(effect.end_sec)
+    span = end - start
+    if span <= 1e-9:
+        return []
+    fade = min(float(effect.fade_sec), span / 2.0)
+    max_sigma = float(effect.max_sigma)
+    steps = max(1, int(steps))
+    parts: list[str] = []
+
+    if fade > 1e-9:
+        for i in range(1, steps + 1):
+            sigma = max_sigma * i / steps
+            t0 = start + fade * (i - 1) / steps
+            t1 = start + fade * i / steps
+            parts.append(
+                f"gblur=sigma={sigma:.3f}:enable='between(t\\,{t0:.6f}\\,{t1:.6f})'"
+            )
+
+    hold_start = start + fade
+    hold_end = end - fade
+    if hold_end > hold_start + 1e-9:
+        parts.append(
+            f"gblur=sigma={max_sigma:.3f}:"
+            f"enable='between(t\\,{hold_start:.6f}\\,{hold_end:.6f})'"
+        )
+
+    if fade > 1e-9:
+        for i in range(steps, 0, -1):
+            sigma = max_sigma * i / steps
+            t0 = end - fade * i / steps
+            t1 = end - fade * (i - 1) / steps
+            parts.append(
+                f"gblur=sigma={sigma:.3f}:enable='between(t\\,{t0:.6f}\\,{t1:.6f})'"
+            )
+
+    return parts
+
+
 def _effect_filters(clip: Clip, width: int, height: int, fps: int) -> list[str]:
     parts: list[str] = []
     for effect in clip.effects:
@@ -337,6 +379,8 @@ def _effect_filters(clip: Clip, width: int, height: int, fps: int) -> list[str]:
             if font_path:
                 draw += f":fontfile='{_escape_fontfile(font_path)}'"
             parts.append(draw)
+        elif isinstance(effect, BlurEffect):
+            parts.extend(_gblur_step_filters(effect))
     return parts
 
 

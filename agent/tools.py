@@ -240,6 +240,51 @@ OLLAMA_TOOLS: list[dict[str, Any]] = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "apply_crossfade_to_selection",
+            "description": (
+                "Apply a crossfade/fade transition on the clip boundary inside "
+                "the painted selection. Duration defaults to the selection "
+                "length (capped). Use for 'Tee valitulle alueelle crossfade' "
+                "or 'Apply a crossfade to the selected range'."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "transition_type": {
+                        "type": "string",
+                        "description": "fade|fadeblack|wipeleft|wiperight",
+                    },
+                    "duration_sec": {
+                        "type": "number",
+                        "description": "Optional override; defaults to selection length.",
+                    },
+                },
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "add_blur_to_selection",
+            "description": (
+                "Add a soft focus-in/out blur (gblur) across the painted "
+                "selection. Use for 'Tee valitulle alueelle pehmeä blur-siirtymä' "
+                "or 'Add a soft blur transition to the selected range'."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "max_sigma": {"type": "number"},
+                    "fade_sec": {"type": "number"},
+                },
+                "required": [],
+            },
+        },
+    },
 ]
 
 
@@ -400,6 +445,24 @@ def execute_tool(
                     "selection_end_sec": editor.selection_end_sec,
                 }
             ), changed
+
+        if name == "apply_crossfade_to_selection":
+            transition = editor.apply_crossfade_to_selection(
+                transition_type=str(args.get("transition_type") or "fade"),
+                duration_sec=(
+                    float(args["duration_sec"])
+                    if args.get("duration_sec") is not None
+                    else None
+                ),
+            )
+            return _dump(transition), changed
+
+        if name == "add_blur_to_selection":
+            effects = editor.add_blur_to_selection(
+                max_sigma=float(args.get("max_sigma") or 18.0),
+                fade_sec=float(args.get("fade_sec") or 0.6),
+            )
+            return _dump([e.model_dump() for e in effects]), changed
 
         return json.dumps({"error": f"Unknown tool: {name}"}), False
     except Exception as exc:  # noqa: BLE001 – LLM tarvitsee selkeän virheen

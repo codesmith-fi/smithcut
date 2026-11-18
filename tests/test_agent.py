@@ -7,10 +7,20 @@ from unittest.mock import MagicMock, patch
 import httpx
 import pytest
 
-from agent.llm_agent import AgentResult, run_agent
+from agent.llm_agent import AgentResult, run_agent, strip_think_tags
 from agent.tools import execute_tool, one_to_zero
 from controller.editor import EditorController
 from model.timeline import Clip, Timeline, VideoSource
+
+
+def test_strip_think_tags():
+    assert (
+        strip_think_tags("<think>planning</think>Lisäsin zoomin.")
+        == "Lisäsin zoomin."
+    )
+    assert strip_think_tags("OK</think>") == "OK"
+    assert strip_think_tags("<think>only") == "only"
+    assert strip_think_tags("  clean  ") == "clean"
 
 
 def _editor_with_clip() -> EditorController:
@@ -90,7 +100,7 @@ def test_run_agent_tool_then_reply():
         {
             "message": {
                 "role": "assistant",
-                "content": "Lisäsin tekstin klippiin 1.",
+                "content": "<think>hmm</think>Lisäsin tekstin klippiin 1.",
             }
         },
     ]
@@ -113,6 +123,8 @@ def test_run_agent_tool_then_reply():
     assert result.changed is True
     assert "add_text" in result.tool_calls
     assert "klippiin 1" in result.reply
+    assert "<think>" not in result.reply
+    assert "</think>" not in result.reply
     assert any(
         getattr(e, "text", None) == "Hei" for e in editor.timeline.clips[0].effects
     )

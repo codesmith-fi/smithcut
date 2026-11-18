@@ -13,6 +13,7 @@ from compiler.ffprobe import probe
 from model.history import HistoryManager
 from model.timeline import (
     BackgroundMusic,
+    BlurEffect,
     Clip,
     TextEffect,
     Timeline,
@@ -38,6 +39,7 @@ _SUMMARY_I18N: dict[str, dict[str, Any]] = {
         "clip_title": "Klippi {n}",
         "effect_zoom": "Zoom",
         "effect_text": "Teksti",
+        "effect_blur": "Blur",
         "bgm_on": "Taustamusiikki käytössä",
         "empty": "Aikajana on tyhjä – tuo video aloittaaksesi.",
         "description": (
@@ -55,6 +57,7 @@ _SUMMARY_I18N: dict[str, dict[str, Any]] = {
         "clip_title": "Clip {n}",
         "effect_zoom": "Zoom",
         "effect_text": "Text",
+        "effect_blur": "Blur",
         "bgm_on": "Background music on",
         "empty": "Timeline is empty — import a video to get started.",
         "description": (
@@ -435,6 +438,30 @@ class EditorController:
         self.timeline.clips[clip_index] = updated
         return effect
 
+    def add_blur_effect(
+        self,
+        clip_index: int,
+        start_sec: float,
+        end_sec: float,
+        *,
+        max_sigma: float = 18.0,
+        fade_sec: float = 0.6,
+    ) -> BlurEffect:
+        """Lisää pehmeä blur-siirtymä klipin paikalliseen aikaväliin."""
+        clip = self._clip(clip_index)
+        effect = BlurEffect(
+            start_sec=float(start_sec),
+            end_sec=float(end_sec),
+            max_sigma=float(max_sigma),
+            fade_sec=float(fade_sec),
+        )
+        if effect.end_sec > clip.duration + 1e-9:
+            raise ValueError("blur effect exceeds clip duration")
+        self._checkpoint()
+        updated = clip.model_copy(update={"effects": [*clip.effects, effect]})
+        self.timeline.clips[clip_index] = updated
+        return effect
+
     def set_music(
         self,
         file_path: str,
@@ -504,6 +531,18 @@ class EditorController:
                             "duration": effect.duration,
                             "position": effect.position,
                             "font_style": effect.font_style,
+                        }
+                    )
+                elif isinstance(effect, BlurEffect):
+                    effects.append(
+                        {
+                            "type": "blur",
+                            "label": L["effect_blur"],
+                            "start_sec": effect.start_sec,
+                            "end_sec": effect.end_sec,
+                            "duration": effect.duration,
+                            "max_sigma": effect.max_sigma,
+                            "fade_sec": effect.fade_sec,
                         }
                     )
             clip_index = i + 1
@@ -703,11 +742,21 @@ class EditorController:
             new_end = min(span, e_end - local_start)
             if new_end - new_start <= 1e-9:
                 continue
-            kept.append(
-                effect.model_copy(
-                    update={"start_sec": new_start, "duration": new_end - new_start}
+            if isinstance(effect, BlurEffect):
+                kept.append(
+                    effect.model_copy(
+                        update={"start_sec": new_start, "end_sec": new_end}
+                    )
                 )
-            )
+            else:
+                kept.append(
+                    effect.model_copy(
+                        update={
+                            "start_sec": new_start,
+                            "duration": new_end - new_start,
+                        }
+                    )
+                )
         return kept
 
     def cut_out_range(self, start_sec: float, duration_sec: float) -> None:
@@ -878,6 +927,93 @@ class EditorController:
         duration = end - start
         self.cut_out_range(start, duration)
         self.clear_selection()
+
+    def selection_boundary_index(self) -> int | None:
+        """0-pohjainen after_clip_index, jos valinta ylittää klippien sauman."""
+        if not self.has_selection():
+            return None
+        sel_s = float(self.selection_start_sec)  # type: ignore[arg-type]
+        sel_e = float(self.selection_end_sec)  # type: ignore[arg-type]
+        spans = self.clip_spans()
+        for i in range(len(spans) - 1):
+            _ai, a_start, a_end = spans[i]
+            _bi, b_start, b_end = spans[i + 1]
+            overlaps_a = sel_s < a_end - 1e-9 and sel_e > a_start + 1e-9
+            overlaps_b = sel_s < b_end - 1e-9 and sel_e > b_start + 1e-9
+            if overlaps_a and overlaps_b:
+                return i
+        return None
+
+    def apply_crossfade_to_selection(
+        self,
+        transition_type: str = "fade",
+        duration_sec: float | None = None,
+    ) -> Transition:
+        """Aseta crossfade valitun alueen ylittämälle klippisaumalle."""
+        if not self.has_selection():
+            raise ValueError("no active selection range")
+        boundary = self.selection_boundary_index()
+        if boundary is None:
+            raise ValueError(
+                "selection does not span a clip boundary; "
+                "paint a range across two adjacent clips"
+            )
+
+        left = self.timeline.clips[boundary]
+        right = self.timeline.clips[boundary + 1]
+        sel_s = float(self.selection_start_sec)  # type: ignore[arg-type]
+        sel_e = float(self.selection_end_sec)  # type: ignore[arg-type]
+        requested = float(duration_sec) if duration_sec is not None else (sel_e - sel_s)
+        max_dur = min(left.duration, right.duration) * 0.9
+        duration = min(max(requested, self.SELECTION_MIN_SEC), max_dur)
+        # set_transition vaatii duration < molemmat klipit
+        duration = min(duration, left.duration - 1e-3, right.duration - 1e-3)
+        if duration <= self.SELECTION_MIN_SEC:
+            raise ValueError("computed crossfade duration is too short")
+
+        transition = self.set_transition(boundary, transition_type, duration)
+        self.clear_selection()
+        return transition
+
+    def add_blur_to_selection(
+        self,
+        *,
+        max_sigma: float = 18.0,
+        fade_sec: float = 0.6,
+    ) -> list[BlurEffect]:
+        """Lisää pehmeä blur valitulle alueelle (kaikki osuvat klipit)."""
+        if not self.has_selection():
+            raise ValueError("no active selection range")
+        sel_s = float(self.selection_start_sec)  # type: ignore[arg-type]
+        sel_e = float(self.selection_end_sec)  # type: ignore[arg-type]
+
+        planned: list[tuple[int, float, float]] = []
+        for i, cs, ce in self.clip_spans():
+            o_start = max(sel_s, cs)
+            o_end = min(sel_e, ce)
+            if o_end - o_start < self.SELECTION_MIN_SEC:
+                continue
+            planned.append((i, o_start - cs, o_end - cs))
+        if not planned:
+            raise ValueError("selection does not overlap any clip")
+
+        self._checkpoint()
+        created: list[BlurEffect] = []
+        for clip_index, local_start, local_end in planned:
+            clip = self.timeline.clips[clip_index]
+            local_fade = min(float(fade_sec), (local_end - local_start) / 2.0)
+            effect = BlurEffect(
+                start_sec=local_start,
+                end_sec=local_end,
+                max_sigma=float(max_sigma),
+                fade_sec=max(local_fade, 0.05),
+            )
+            updated = clip.model_copy(update={"effects": [*clip.effects, effect]})
+            self.timeline.clips[clip_index] = updated
+            created.append(effect)
+
+        self.clear_selection()
+        return created
 
     def get_clip_thumbnail(self, index: int) -> Path:
         """Palauta klipin aloitusframen pikkukuva (1-pohjainen indeksi).

@@ -50,7 +50,29 @@ class TextEffect(BaseModel):
         return value
 
 
-Effect = Annotated[Union[ZoomEffect, TextEffect], Field(discriminator="type")]
+class BlurEffect(BaseModel):
+    """Pehmeä focus-in/out -sumennus klipin aikavälillä."""
+
+    type: Literal["blur"] = "blur"
+    start_sec: float = Field(ge=0)
+    end_sec: float = Field(gt=0)
+    max_sigma: float = Field(default=18.0, gt=0.0, le=50.0)
+    fade_sec: float = Field(default=0.6, gt=0.0)
+
+    @model_validator(mode="after")
+    def validate_blur_range(self) -> BlurEffect:
+        if self.end_sec <= self.start_sec:
+            raise ValueError("end_sec must be greater than start_sec")
+        return self
+
+    @property
+    def duration(self) -> float:
+        return self.end_sec - self.start_sec
+
+
+Effect = Annotated[
+    Union[ZoomEffect, TextEffect, BlurEffect], Field(discriminator="type")
+]
 
 
 class Clip(BaseModel):

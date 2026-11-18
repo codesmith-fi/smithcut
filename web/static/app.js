@@ -609,6 +609,9 @@ function renderClipStrip() {
         if (effect.type === "text") {
           return `<span class="tag text">${effect.label || t("effectText")}</span>`;
         }
+        if (effect.type === "blur") {
+          return `<span class="tag blur">${effect.label || t("effectBlur")}</span>`;
+        }
         return "";
       })
       .join("");

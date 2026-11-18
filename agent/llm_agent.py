@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -14,6 +15,8 @@ load_dotenv()
 
 from agent.tools import OLLAMA_TOOLS, execute_tool
 from controller.editor import EditorController, normalize_lang
+
+_THINK_TAG_RE = re.compile(r"<think>.*?</think>|</?think>", re.DOTALL)
 
 DEFAULT_OLLAMA_URL = "http://localhost:11434"
 DEFAULT_MODEL = "qwen3:8b"
@@ -62,6 +65,11 @@ class AgentError(Exception):
         self.message = message
 
 
+def strip_think_tags(reply: str) -> str:
+    """Poista Qwen3:n <think>...</think> -jäänteet käyttäjävastauksesta."""
+    return _THINK_TAG_RE.sub("", reply or "").strip()
+
+
 def _model_name() -> str:
     return os.environ.get("CUTSMITH_MODEL", DEFAULT_MODEL)
 
@@ -107,6 +115,13 @@ def _system_prompt(lang: str, state_summary: dict[str, Any]) -> str:
         "('valittu alue', 'maalattu kohta', 'selected range') without numbers, "
         "call cut_timeline_range with no start_sec and no duration_sec so the "
         "active selection is used.\n"
+        "When the user asks for a crossfade on the selected range "
+        "('Tee timelinestä valitulle alueelle crossfade' / "
+        "'Apply a crossfade to the selected range'), call "
+        "apply_crossfade_to_selection (duration defaults to the selection).\n"
+        "When the user asks for a soft blur transition on the selected range "
+        "('Tee valitulle alueelle pehmeä blur-siirtymä' / "
+        "'Add a soft blur to the selected range'), call add_blur_to_selection.\n"
         "Batch all needed tool calls first; do not ask the user to preview — "
         "the app renders preview once after you finish.\n"
         "After tools finish, give a short plain-language confirmation of what changed.\n"
@@ -257,7 +272,7 @@ def run_agent(
                     )
                 continue
 
-            content = (msg.get("content") or "").strip()
+            content = strip_think_tags(msg.get("content") or "")
             if not content:
                 return AgentResult(
                     reply=strings["empty"],

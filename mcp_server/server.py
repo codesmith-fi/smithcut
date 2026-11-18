@@ -235,6 +235,41 @@ def create_mcp_server(
             args["start_sec"] = start_sec
         return _run("cut_timeline_range", args)
 
+    @server.tool(
+        name="apply_crossfade_to_selection",
+        description=(
+            "Apply a crossfade on the clip seam inside the painted selection. "
+            "Duration defaults to the selection length (capped). "
+            "Use for 'Tee valitulle alueelle crossfade' / "
+            "'Apply a crossfade to the selected range'."
+        ),
+    )
+    def apply_crossfade_to_selection(
+        transition_type: str = "fade",
+        duration_sec: float | None = None,
+    ) -> str:
+        args: dict[str, Any] = {"transition_type": transition_type}
+        if duration_sec is not None:
+            args["duration_sec"] = duration_sec
+        return _run("apply_crossfade_to_selection", args)
+
+    @server.tool(
+        name="add_blur_to_selection",
+        description=(
+            "Add a soft focus-in/out blur across the painted selection. "
+            "Use for 'Tee valitulle alueelle pehmeä blur-siirtymä' / "
+            "'Add a soft blur transition to the selected range'."
+        ),
+    )
+    def add_blur_to_selection(
+        max_sigma: float = 18.0,
+        fade_sec: float = 0.6,
+    ) -> str:
+        return _run(
+            "add_blur_to_selection",
+            {"max_sigma": max_sigma, "fade_sec": fade_sec},
+        )
+
     # Testejä / agenttia varten: säilytä controller-viite
     server._cutsmith_editor = ctrl  # type: ignore[attr-defined]
     return server
