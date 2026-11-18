@@ -8,12 +8,12 @@ import uuid
 from pathlib import Path
 from typing import Any, Literal, Optional
 
-from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from controller.editor import EditorController
+from controller.editor import EditorController, chat_stub_reply, normalize_lang
 
 ROOT = Path(__file__).resolve().parent.parent
 STATIC_DIR = Path(__file__).resolve().parent / "static"
@@ -62,6 +62,7 @@ class RenderRequest(BaseModel):
 
 class ChatRequest(BaseModel):
     message: str = Field(min_length=1)
+    lang: Literal["fi", "en"] = "fi"
 
 
 # ---------------------------------------------------------------------------
@@ -87,8 +88,8 @@ def _media_url(workspace: Path, path: Path) -> str | None:
     return f"/media/{rel.as_posix()}"
 
 
-def _state_payload(editor: EditorController) -> dict[str, Any]:
-    summary = editor.get_state_summary()
+def _state_payload(editor: EditorController, lang: str = "fi") -> dict[str, Any]:
+    summary = editor.get_state_summary(lang=lang)
     workspace = Path(editor.workspace)
     preview = workspace / "cutsmith_preview.mp4"
     final = workspace / "cutsmith_final.mp4"
@@ -99,6 +100,14 @@ def _state_payload(editor: EditorController) -> dict[str, Any]:
     summary["can_undo"] = editor.history.can_undo()
     summary["can_redo"] = editor.history.can_redo()
     return summary
+
+
+def _lang_from_request(
+    lang: str | None = None,
+    *,
+    default: str = "fi",
+) -> str:
+    return normalize_lang(lang or default)
 
 
 def _error(exc: Exception, status: int = 400) -> JSONResponse:
@@ -126,15 +135,18 @@ def create_app(
         return app.state.editor
 
     @app.get("/api/state")
-    def api_state() -> dict[str, Any]:
-        return {"ok": True, "state": _state_payload(get_editor())}
+    def api_state(lang: str = Query(default="fi")) -> dict[str, Any]:
+        code = _lang_from_request(lang)
+        return {"ok": True, "state": _state_payload(get_editor(), lang=code)}
 
     @app.post("/api/upload", response_model=None)
     async def api_upload(
         file: UploadFile = File(...),
         kind: str = Form(default="auto"),
+        lang: str = Form(default="fi"),
     ):
         editor = get_editor()
+        code = _lang_from_request(lang)
         workspace = Path(editor.workspace)
         original = file.filename or "upload.bin"
         safe = _safe_filename(original)
@@ -144,7 +156,7 @@ def create_app(
 
         data = await file.read()
         if not data:
-            raise HTTPException(status_code=400, detail="Tyhjä tiedosto")
+            raise HTTPException(status_code=400, detail="Empty file")
         dest.write_bytes(data)
 
         inferred = kind
@@ -162,7 +174,7 @@ def create_app(
                 else:
                     raise HTTPException(
                         status_code=400,
-                        detail="Tuntematon tiedostotyyppi – käytä videota tai ääntä",
+                        detail="Unknown file type – use video or audio",
                     )
 
         try:
@@ -172,7 +184,7 @@ def create_app(
                     "ok": True,
                     "kind": "music",
                     "music": music.model_dump(),
-                    "state": _state_payload(editor),
+                    "state": _state_payload(editor, lang=code),
                 }
 
             source = editor.import_video(str(dest))
@@ -183,19 +195,20 @@ def create_app(
                 "kind": "video",
                 "source": source.model_dump(),
                 "clip": clip.model_dump(),
-                "state": _state_payload(editor),
+                "state": _state_payload(editor, lang=code),
             }
         except Exception as exc:  # noqa: BLE001 – rajapinta palauttaa viestin
             dest.unlink(missing_ok=True)
             return _error(exc)
 
     @app.post("/api/clips", response_model=None)
-    def api_clips(body: ClipRequest):
+    def api_clips(body: ClipRequest, lang: str = Query(default="fi")):
         editor = get_editor()
+        code = _lang_from_request(lang)
         try:
             if body.action == "add":
                 if not body.source_id or body.start_sec is None or body.end_sec is None:
-                    raise ValueError("add vaatii source_id, start_sec ja end_sec")
+                    raise ValueError("add requires source_id, start_sec and end_sec")
                 insert_at = (
                     _one_to_zero(body.insert_at) if body.insert_at is not None else None
                 )
@@ -204,37 +217,38 @@ def create_app(
                 )
             elif body.action == "trim":
                 if body.clip_index is None or body.start_sec is None or body.end_sec is None:
-                    raise ValueError("trim vaatii clip_index, start_sec ja end_sec")
+                    raise ValueError("trim requires clip_index, start_sec and end_sec")
                 editor.trim_clip(
                     _one_to_zero(body.clip_index), body.start_sec, body.end_sec
                 )
             elif body.action == "split":
                 if body.clip_index is None or body.split_at_sec is None:
-                    raise ValueError("split vaatii clip_index ja split_at_sec")
+                    raise ValueError("split requires clip_index and split_at_sec")
                 editor.split_clip(_one_to_zero(body.clip_index), body.split_at_sec)
             elif body.action == "remove":
                 if body.clip_index is None:
-                    raise ValueError("remove vaatii clip_index")
+                    raise ValueError("remove requires clip_index")
                 editor.remove_clip(_one_to_zero(body.clip_index))
             elif body.action == "move":
                 if body.from_index is None or body.to_index is None:
-                    raise ValueError("move vaatii from_index ja to_index")
+                    raise ValueError("move requires from_index and to_index")
                 editor.move_clip(
                     _one_to_zero(body.from_index), _one_to_zero(body.to_index)
                 )
-            return {"ok": True, "state": _state_payload(editor)}
+            return {"ok": True, "state": _state_payload(editor, lang=code)}
         except (ValueError, KeyError, IndexError) as exc:
             return _error(exc)
         except Exception as exc:  # noqa: BLE001
             return _error(exc, status=500)
 
     @app.post("/api/effects", response_model=None)
-    def api_effects(body: EffectRequest):
+    def api_effects(body: EffectRequest, lang: str = Query(default="fi")):
         editor = get_editor()
+        code = _lang_from_request(lang)
         try:
             if body.action == "zoom":
                 if body.clip_index is None:
-                    raise ValueError("zoom vaatii clip_index")
+                    raise ValueError("zoom requires clip_index")
                 editor.add_zoom(
                     _one_to_zero(body.clip_index),
                     start_sec=body.start_sec,
@@ -246,7 +260,7 @@ def create_app(
                 )
             elif body.action == "text":
                 if body.clip_index is None or not body.text:
-                    raise ValueError("text vaatii clip_index ja text")
+                    raise ValueError("text requires clip_index and text")
                 editor.add_text(
                     _one_to_zero(body.clip_index),
                     text=body.text,
@@ -256,33 +270,44 @@ def create_app(
                 )
             elif body.action == "transition":
                 if body.after_clip is None:
-                    raise ValueError("transition vaatii after_clip")
+                    raise ValueError("transition requires after_clip")
                 editor.set_transition(
                     _one_to_zero(body.after_clip),
                     transition_type=body.transition_type,
                     duration=body.duration,
                 )
-            return {"ok": True, "state": _state_payload(editor)}
+            return {"ok": True, "state": _state_payload(editor, lang=code)}
         except (ValueError, IndexError) as exc:
             return _error(exc)
         except Exception as exc:  # noqa: BLE001
             return _error(exc, status=500)
 
     @app.post("/api/undo")
-    def api_undo() -> dict[str, Any]:
+    def api_undo(lang: str = Query(default="fi")) -> dict[str, Any]:
         editor = get_editor()
+        code = _lang_from_request(lang)
         changed = editor.undo()
-        return {"ok": True, "changed": changed, "state": _state_payload(editor)}
+        return {
+            "ok": True,
+            "changed": changed,
+            "state": _state_payload(editor, lang=code),
+        }
 
     @app.post("/api/redo")
-    def api_redo() -> dict[str, Any]:
+    def api_redo(lang: str = Query(default="fi")) -> dict[str, Any]:
         editor = get_editor()
+        code = _lang_from_request(lang)
         changed = editor.redo()
-        return {"ok": True, "changed": changed, "state": _state_payload(editor)}
+        return {
+            "ok": True,
+            "changed": changed,
+            "state": _state_payload(editor, lang=code),
+        }
 
     @app.post("/api/render", response_model=None)
-    def api_render(body: RenderRequest):
+    def api_render(body: RenderRequest, lang: str = Query(default="fi")):
         editor = get_editor()
+        code = _lang_from_request(lang)
         try:
             path = editor.render(mode=body.mode)
             media = _media_url(Path(editor.workspace), Path(path))
@@ -291,7 +316,7 @@ def create_app(
                 "mode": body.mode,
                 "path": path,
                 "url": media,
-                "state": _state_payload(editor),
+                "state": _state_payload(editor, lang=code),
             }
         except Exception as exc:  # noqa: BLE001
             return _error(exc, status=500)
@@ -299,16 +324,14 @@ def create_app(
     @app.post("/api/chat")
     def api_chat(body: ChatRequest) -> dict[str, Any]:
         # Vaihe 3 kytkee paikallisen LLM:n tähän.
+        code = _lang_from_request(body.lang)
         return {
             "ok": True,
             "ready": False,
-            "reply": (
-                "Paikallinen kielimalli ei ole vielä kytketty. "
-                "Käytä toistaiseksi klippinauhaa, zoomausta esikatselusta "
-                "tai pikakomentoja. (Vaihe 3: Ollama / Qwen)"
-            ),
+            "lang": code,
+            "reply": chat_stub_reply(code),
             "echo": body.message.strip(),
-            "state": _state_payload(get_editor()),
+            "state": _state_payload(get_editor(), lang=code),
         }
 
     @app.get("/media/{file_path:path}")

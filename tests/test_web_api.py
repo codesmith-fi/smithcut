@@ -63,8 +63,24 @@ def test_get_state_empty(client: TestClient):
     body = res.json()
     assert body["ok"] is True
     assert body["state"]["clip_count"] == 0
+    assert body["state"]["lang"] == "fi"
+    assert "tyhjä" in body["state"]["description"].lower()
     assert body["state"]["can_undo"] is False
     assert body["state"]["can_redo"] is False
+
+
+def test_get_state_lang_en(client: TestClient):
+    res = client.get("/api/state?lang=en")
+    assert res.status_code == 200
+    body = res.json()
+    assert body["state"]["lang"] == "en"
+    assert "empty" in body["state"]["description"].lower()
+
+    _upload_video(client)
+    res = client.get("/api/state?lang=en")
+    state = res.json()["state"]
+    assert state["clips"][0]["title"] == "Clip 1"
+    assert "clip" in state["description"].lower()
 
 
 def test_upload_video_imports_and_adds_clip(client: TestClient):
@@ -198,13 +214,25 @@ def test_render_preview_and_media_range(client: TestClient, workspace: Path):
 
 
 def test_chat_stub_ready_for_phase3(client: TestClient):
-    res = client.post("/api/chat", json={"message": "Lisää zoom klippiin 1"})
+    res = client.post("/api/chat", json={"message": "Lisää zoom klippiin 1", "lang": "fi"})
     assert res.status_code == 200
     body = res.json()
     assert body["ok"] is True
     assert body["ready"] is False
+    assert body["lang"] == "fi"
     assert "ei ole vielä kytketty" in body["reply"].lower()
     assert body["echo"] == "Lisää zoom klippiin 1"
+    assert body["state"]["lang"] == "fi"
+
+    en = client.post(
+        "/api/chat",
+        json={"message": "Add zoom to clip 1", "lang": "en"},
+    )
+    assert en.status_code == 200
+    en_body = en.json()
+    assert en_body["lang"] == "en"
+    assert "not connected yet" in en_body["reply"].lower()
+    assert en_body["state"]["lang"] == "en"
 
 
 def test_static_index_served(client: TestClient):
@@ -212,6 +240,8 @@ def test_static_index_served(client: TestClient):
     assert res.status_code == 200
     assert "CutSmith" in res.text
     assert 'id="preview"' in res.text
+    assert 'data-lang="fi"' in res.text
+    assert 'data-lang="en"' in res.text
 
     css = client.get("/style.css")
     assert css.status_code == 200
@@ -220,6 +250,12 @@ def test_static_index_served(client: TestClient):
     js = client.get("/app.js")
     assert js.status_code == 200
     assert "api/state" in js.text
+    assert "i18n.js" in js.text
+
+    i18n = client.get("/i18n.js")
+    assert i18n.status_code == 200
+    assert "cutsmith_lang" in i18n.text
+    assert "Updating preview" in i18n.text
 
 
 def test_clips_validation_error(client: TestClient):

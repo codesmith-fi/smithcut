@@ -99,15 +99,38 @@ def test_get_state_summary_is_one_based(editor: EditorController):
     editor.add_text(1, "Hi", 0.0, 1.0)
 
     summary = editor.get_state_summary()
+    assert summary["lang"] == "fi"
     assert summary["clip_count"] == 2
     assert summary["clips"][0]["index"] == 1
+    assert summary["clips"][0]["title"] == "Klippi 1"
     assert summary["clips"][1]["index"] == 2
     assert summary["transitions"][0]["after_clip"] == 1
+    assert summary["transitions"][0]["label"] == "Häivytys"
     assert summary["total_duration_sec"] == pytest.approx(9.6)
     assert summary["can_undo"] is True
     assert summary["can_redo"] is False
     assert any(e["type"] == "zoom" for e in summary["clips"][0]["effects"])
     assert any(e["type"] == "text" for e in summary["clips"][1]["effects"])
+    assert "klippiä" in summary["description"].lower()
+
+
+def test_get_state_summary_english(editor: EditorController):
+    src = _import(editor)
+    editor.add_clip(src.id, 0.0, 5.0)
+    editor.add_clip(src.id, 5.0, 10.0)
+    editor.set_transition(0, "fadeblack", 0.4)
+    editor.add_text(0, "Hello", 0.0, 1.0)
+
+    summary = editor.get_state_summary(lang="en")
+    assert summary["lang"] == "en"
+    assert summary["clips"][0]["title"] == "Clip 1"
+    assert summary["transitions"][0]["label"] == "Fade to black"
+    text_fx = next(e for e in summary["clips"][0]["effects"] if e["type"] == "text")
+    assert text_fx["label"] == "Text"
+    assert "clip" in summary["description"].lower()
+
+    fallback = editor.get_state_summary(lang="de")
+    assert fallback["lang"] == "fi"
 
 
 def test_render_delegates_to_ffmpeg(editor: EditorController, tmp_path: Path):

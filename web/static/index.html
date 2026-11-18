@@ -16,57 +16,68 @@
         <span class="brand-mark" aria-hidden="true"></span>
         <h1 class="brand-name">CutSmith</h1>
       </div>
-      <p class="status" id="status" role="status">Valmis</p>
+      <p class="status" id="status" role="status" data-i18n="ready">Valmis</p>
       <div class="topbar-actions">
-        <button type="button" class="btn ghost" id="btn-undo" disabled title="Kumoa">Kumoa</button>
-        <button type="button" class="btn ghost" id="btn-redo" disabled title="Tee uudelleen">Tee uudelleen</button>
-        <button type="button" class="btn primary" id="btn-export">Vie valmis video</button>
+        <div class="lang-switch" role="group" data-i18n-aria="langSwitcherAria" aria-label="Kielen valinta">
+          <button type="button" class="lang-btn is-active" data-lang="fi" aria-pressed="true">FI</button>
+          <button type="button" class="lang-btn" data-lang="en" aria-pressed="false">EN</button>
+        </div>
+        <button type="button" class="btn ghost" id="btn-undo" disabled data-i18n="undo" data-i18n-title="undo">Kumoa</button>
+        <button type="button" class="btn ghost" id="btn-redo" disabled data-i18n="redo" data-i18n-title="redo">Tee uudelleen</button>
+        <button type="button" class="btn primary" id="btn-export" data-i18n="export">Vie valmis video</button>
       </div>
     </header>
 
     <main class="workspace">
-      <section class="preview-panel" aria-label="Esikatselu">
-        <div class="preview-stage" id="preview-stage">
+      <section class="preview-panel" data-i18n-aria="previewAria" aria-label="Esikatselu">
+        <div
+          class="preview-stage is-empty"
+          id="preview-stage"
+          data-i18n-aria="dropzoneAria"
+          aria-label="Raahaa videoita tai musiikkia tähän"
+        >
           <video id="preview" controls playsinline preload="metadata"></video>
           <div class="preview-empty" id="preview-empty">
-            <p>Tuo video aloittaaksesi</p>
-            <span>Raahaa tiedosto alle tai käytä + Tuo -painiketta</span>
+            <p data-i18n="previewEmptyTitle">Tuo video aloittaaksesi</p>
+            <span data-i18n="previewEmptyHint">Raahaa tiedosto tähän tai käytä Tuo tiedosto -painiketta</span>
           </div>
-          <div class="zoom-toast" id="zoom-toast" hidden>
-            Klikkaa kuvaa lisätäksesi zoomauksen tähän kohtaan
+          <div class="zoom-toast" id="zoom-toast" hidden data-i18n="zoomToast">
+            Zoomaus lisätään tähän kohtaan
           </div>
         </div>
         <div class="preview-hint">
-          <span>Vinkki:</span> klikkaa esikatselua zoomataksesi valittuun kohtaan.
+          <span data-i18n="previewHintLabel">Vinkki:</span>
+          <span data-i18n="previewHint">klikkaa esikatselua zoomataksesi valittuun kohtaan. Voit myös raahata tiedoston tähän.</span>
         </div>
       </section>
 
-      <section class="library-panel" aria-label="Mediapankki ja klippinauha">
+      <section class="library-panel" data-i18n-aria="libraryAria" aria-label="Mediapankki ja klippinauha">
         <div
           class="dropzone"
           id="dropzone"
           tabindex="0"
           role="button"
+          data-i18n-aria="dropzoneAria"
           aria-label="Raahaa videoita tai musiikkia tähän"
         >
           <div class="dropzone-inner">
-            <strong>Raahaa videoita tai taustamusiikkia tähän</strong>
-            <span>tai</span>
+            <strong data-i18n="dropzoneTitle">Raahaa videoita tai taustamusiikkia tähän</strong>
+            <span data-i18n="dropzoneOr">tai</span>
             <label class="btn soft file-btn">
-              Tuo tiedosto
+              <span data-i18n="importFile">Tuo tiedosto</span>
               <input type="file" id="file-input" accept="video/*,audio/*" hidden />
             </label>
           </div>
-          <p class="dropzone-meta" id="library-meta">Ei vielä materiaalia</p>
+          <p class="dropzone-meta" id="library-meta" data-i18n="noMaterial">Ei vielä materiaalia</p>
         </div>
 
         <div class="timeline-header">
-          <h2>Klippinauha</h2>
+          <h2 data-i18n="timelineTitle">Klippinauha</h2>
           <p id="timeline-duration">Kesto: 0 s</p>
         </div>
         <div class="clip-strip-wrap">
           <div class="clip-strip" id="clip-strip" aria-live="polite">
-            <p class="strip-empty" id="strip-empty">Klipit ilmestyvät tähän tuonnin jälkeen</p>
+            <p class="strip-empty" id="strip-empty" data-i18n="stripEmpty">Klipit ilmestyvät tähän tuonnin jälkeen</p>
           </div>
         </div>
       </section>
@@ -74,20 +85,21 @@
 
     <footer class="command-bar">
       <div class="quick-actions" id="quick-actions">
-        <button type="button" class="chip" data-quick="zoom-center">Lisää zoom</button>
-        <button type="button" class="chip" data-quick="text">Lisää teksti</button>
-        <button type="button" class="chip" data-quick="fade">Häivytys siirtymäksi</button>
-        <button type="button" class="chip" data-quick="split">Jaa klippi</button>
+        <button type="button" class="chip" data-quick="zoom-center" data-i18n="quickZoom">Lisää zoom</button>
+        <button type="button" class="chip" data-quick="text" data-i18n="quickText">Lisää teksti</button>
+        <button type="button" class="chip" data-quick="fade" data-i18n="quickFade">Häivytys siirtymäksi</button>
+        <button type="button" class="chip" data-quick="split" data-i18n="quickSplit">Jaa klippi</button>
       </div>
       <form class="command-form" id="command-form">
-        <label class="sr-only" for="command-input">Komento</label>
+        <label class="sr-only" for="command-input" data-i18n="commandLabel">Komento</label>
         <input
           id="command-input"
           type="text"
           autocomplete="off"
+          data-i18n-placeholder="commandPlaceholder"
           placeholder='Kokeile: "Lisää zoom klippiin 1" tai "Lisää teksti Tervetuloa"'
         />
-        <button type="submit" class="btn primary">Lähetä</button>
+        <button type="submit" class="btn primary" data-i18n="send">Lähetä</button>
       </form>
       <p class="command-reply" id="command-reply" hidden></p>
     </footer>
@@ -95,22 +107,22 @@
 
   <dialog class="modal" id="text-modal">
     <form method="dialog" id="text-form" class="modal-card">
-      <h3>Lisää teksti</h3>
+      <h3 data-i18n="textModalTitle">Lisää teksti</h3>
       <label>
-        Teksti
-        <input type="text" id="text-value" required maxlength="120" placeholder="Esim. Tervetuloa" />
+        <span data-i18n="textLabel">Teksti</span>
+        <input type="text" id="text-value" required maxlength="120" data-i18n-placeholder="textPlaceholder" placeholder="Esim. Tervetuloa" />
       </label>
       <label>
-        Sijainti
+        <span data-i18n="positionLabel">Sijainti</span>
         <select id="text-position">
-          <option value="bottom">Alareuna</option>
-          <option value="center">Keskellä</option>
-          <option value="top">Yläreuna</option>
+          <option value="bottom" data-i18n="positionBottom">Alareuna</option>
+          <option value="center" data-i18n="positionCenter">Keskellä</option>
+          <option value="top" data-i18n="positionTop">Yläreuna</option>
         </select>
       </label>
       <div class="modal-actions">
-        <button type="button" class="btn ghost" id="text-cancel">Peruuta</button>
-        <button type="submit" class="btn primary">Lisää</button>
+        <button type="button" class="btn ghost" id="text-cancel" data-i18n="cancel">Peruuta</button>
+        <button type="submit" class="btn primary" data-i18n="add">Lisää</button>
       </div>
     </form>
   </dialog>

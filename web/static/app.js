@@ -1,16 +1,16 @@
-const TRANSITION_LABELS = {
-  none: "Ei siirtymää",
-  fadeblack: "Pimennys",
-  fade: "Häivytys",
-  wipeleft: "Pyyhkäisy ←",
-  wiperight: "Pyyhkäisy →",
-};
+import {
+  applyDomTranslations,
+  getLang,
+  loadStoredLang,
+  setLang,
+  t,
+  transitionLabels,
+} from "./i18n.js";
 
 const state = {
   summary: null,
   selectedClip: 1,
   busy: false,
-  previewToken: 0,
 };
 
 const els = {
@@ -26,7 +26,6 @@ const els = {
   fileInput: document.getElementById("file-input"),
   libraryMeta: document.getElementById("library-meta"),
   clipStrip: document.getElementById("clip-strip"),
-  stripEmpty: document.getElementById("strip-empty"),
   timelineDuration: document.getElementById("timeline-duration"),
   commandForm: document.getElementById("command-form"),
   commandInput: document.getElementById("command-input"),
@@ -44,26 +43,34 @@ function setStatus(message, busy = false) {
   els.status.classList.toggle("is-busy", busy);
 }
 
+function withLang(path) {
+  const url = new URL(path, window.location.origin);
+  url.searchParams.set("lang", getLang());
+  return url.pathname + url.search;
+}
+
 async function api(path, options = {}) {
-  const res = await fetch(path, options);
+  const res = await fetch(withLang(path), options);
   const data = await res.json().catch(() => ({}));
   if (!res.ok || data.ok === false) {
-    throw new Error(data.error || data.detail || `Virhe (${res.status})`);
+    throw new Error(data.error || data.detail || t("errorStatus", { status: res.status }));
   }
   return data;
 }
 
 function formatSeconds(sec) {
   const n = Number(sec) || 0;
-  if (n < 60) return `${n.toFixed(1).replace(/\.0$/, "")} s`;
+  if (n < 60) {
+    return t("seconds", { n: n.toFixed(1).replace(/\.0$/, "") });
+  }
   const m = Math.floor(n / 60);
   const s = (n % 60).toFixed(1).replace(/\.0$/, "");
-  return `${m} min ${s} s`;
+  return t("minutesSeconds", { m, s });
 }
 
 function transitionForClip(afterClip1Based) {
   const list = state.summary?.transitions || [];
-  return list.find((t) => t.after_clip === afterClip1Based) || null;
+  return list.find((item) => item.after_clip === afterClip1Based) || null;
 }
 
 function applyState(summary) {
@@ -76,14 +83,18 @@ function applyState(summary) {
 
   els.undo.disabled = !summary.can_undo;
   els.redo.disabled = !summary.can_redo;
-  els.timelineDuration.textContent = `Kesto: ${formatSeconds(summary.total_duration_sec)}`;
+  els.timelineDuration.textContent = t("duration", {
+    time: formatSeconds(summary.total_duration_sec),
+  });
 
   const sourceCount = summary.sources?.length || 0;
-  const music = summary.bgm ? " · taustamusiikki valittu" : "";
-  els.libraryMeta.textContent =
-    sourceCount === 0
-      ? "Ei vielä materiaalia"
-      : `${sourceCount} video${sourceCount === 1 ? "" : "a"}${music}`;
+  const music = summary.bgm ? t("musicSelected") : "";
+  if (sourceCount === 0) {
+    els.libraryMeta.textContent = t("noMaterial");
+  } else {
+    const key = sourceCount === 1 ? "libraryCount" : "libraryCountPlural";
+    els.libraryMeta.textContent = t(key, { count: sourceCount }) + music;
+  }
 
   renderClipStrip();
   updatePreview(summary.preview_url);
@@ -98,13 +109,8 @@ function updatePreview(url) {
     return;
   }
   const next = `${url}?t=${Date.now()}`;
-  const currentBase = (els.preview.currentSrc || els.preview.src || "").split("?")[0];
-  const nextBase = next.split("?")[0];
   const resume = els.preview.currentTime || 0;
   const wasPaused = els.preview.paused;
-  if (currentBase === nextBase && els.preview.src) {
-    // Sama tiedosto, pakota uudelleenlataus cache-bustilla
-  }
   els.preview.src = next;
   els.preview.load();
   els.preview.addEventListener(
@@ -130,10 +136,12 @@ function renderClipStrip() {
     const empty = document.createElement("p");
     empty.className = "strip-empty";
     empty.id = "strip-empty";
-    empty.textContent = "Klipit ilmestyvät tähän tuonnin jälkeen";
+    empty.textContent = t("stripEmpty");
     els.clipStrip.appendChild(empty);
     return;
   }
+
+  const labels = transitionLabels();
 
   clips.forEach((clip, idx) => {
     const card = document.createElement("article");
@@ -142,20 +150,24 @@ function renderClipStrip() {
     card.dataset.index = String(clip.index);
 
     const effects = (clip.effects || [])
-      .map((e) => {
-        if (e.type === "zoom") return `<span class="tag zoom">Zoom</span>`;
-        if (e.type === "text") return `<span class="tag text">Teksti</span>`;
+      .map((effect) => {
+        if (effect.type === "zoom") {
+          return `<span class="tag zoom">${effect.label || t("effectZoom")}</span>`;
+        }
+        if (effect.type === "text") {
+          return `<span class="tag text">${effect.label || t("effectText")}</span>`;
+        }
         return "";
       })
       .join("");
 
     card.innerHTML = `
-      <h3>Klippi ${clip.index}</h3>
+      <h3>${clip.title || t("clipTitle", { n: clip.index })}</h3>
       <div class="duration">${formatSeconds(clip.duration_sec)}</div>
-      <div class="effect-tags">${effects || '<span class="tag">Ei tehosteita</span>'}</div>
+      <div class="effect-tags">${effects || `<span class="tag">${t("noEffects")}</span>`}</div>
       <div class="clip-actions">
-        <button type="button" data-act="split">Jaa</button>
-        <button type="button" class="danger" data-act="remove">Poista</button>
+        <button type="button" data-act="split">${t("split")}</button>
+        <button type="button" class="danger" data-act="remove">${t("remove")}</button>
       </div>
     `;
 
@@ -226,25 +238,23 @@ function renderClipStrip() {
       const slot = document.createElement("div");
       slot.className = "transition-slot";
       const select = document.createElement("select");
-      select.setAttribute("aria-label", `Siirtymä klippien ${clip.index} ja ${clip.index + 1} välillä`);
+      select.setAttribute(
+        "aria-label",
+        t("transitionAria", { a: clip.index, b: clip.index + 1 })
+      );
       const current = transitionForClip(clip.index);
-      Object.entries(TRANSITION_LABELS).forEach(([value, label]) => {
+      Object.entries(labels).forEach(([value, label]) => {
         const opt = document.createElement("option");
         opt.value = value;
         opt.textContent = label;
-        if (
-          (value === "none" && !current) ||
-          (current && current.type === value)
-        ) {
+        if ((value === "none" && !current) || (current && current.type === value)) {
           opt.selected = true;
         }
         select.appendChild(opt);
       });
       select.addEventListener("change", async () => {
         if (select.value === "none") {
-          // Poista siirtymä asettamalla uudelleen vain jos tarvitaan – ei erillistä API:a.
-          // Käytetään lyhyttä hard-cutia: ei kutsuta set_transition.
-          setStatus("Siirtymä poistetaan seuraavassa vietossa kovaleikkauksena");
+          setStatus(t("transitionClearedHint"));
           return;
         }
         await mutate(() =>
@@ -273,25 +283,25 @@ async function refreshState() {
 
 async function mutate(fn, { renderPreview = true } = {}) {
   try {
-    setStatus("Päivitetään…", true);
+    setStatus(t("updating"), true);
     const data = await fn();
     if (data.state) applyState(data.state);
     else await refreshState();
     if (renderPreview && (state.summary?.clips?.length || 0) > 0) {
       await runRender("preview");
     } else {
-      setStatus("Valmis");
+      setStatus(t("ready"));
     }
     return data;
   } catch (err) {
-    setStatus("Valmis");
-    showReply(err.message || "Toiminto epäonnistui");
+    setStatus(t("ready"));
+    showReply(err.message || t("actionFailed"));
     throw err;
   }
 }
 
 async function runRender(mode) {
-  setStatus(mode === "final" ? "Luodaan valmista videota…" : "Päivitetään esikatselua…", true);
+  setStatus(mode === "final" ? t("creatingFinal") : t("updatingPreview"), true);
   try {
     const data = await api("/api/render", {
       method: "POST",
@@ -300,14 +310,14 @@ async function runRender(mode) {
     });
     if (data.state) applyState(data.state);
     if (data.url) updatePreview(data.url);
-    setStatus(mode === "final" ? "Valmis video luotu" : "Valmis");
+    setStatus(mode === "final" ? t("finalReady") : t("ready"));
     if (mode === "final") {
-      showReply("Valmis video on valmis – voit avata sen esikatselusta tai workspace-kansiosta.");
+      showReply(t("finalReadyReply"));
     }
     return data;
   } catch (err) {
-    setStatus("Valmis");
-    showReply(err.message || "Renderöinti epäonnistui");
+    setStatus(t("ready"));
+    showReply(err.message || t("renderFailed"));
     throw err;
   }
 }
@@ -321,12 +331,34 @@ async function uploadFile(file) {
   const form = new FormData();
   form.append("file", file);
   form.append("kind", "auto");
+  form.append("lang", getLang());
   await mutate(() =>
     api("/api/upload", {
       method: "POST",
       body: form,
     })
   );
+}
+
+function wireDropTarget(element) {
+  ["dragenter", "dragover"].forEach((evt) => {
+    element.addEventListener(evt, (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      element.classList.add("is-dragover");
+    });
+  });
+  ["dragleave", "drop"].forEach((evt) => {
+    element.addEventListener(evt, (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      element.classList.remove("is-dragover");
+    });
+  });
+  element.addEventListener("drop", async (e) => {
+    const file = e.dataTransfer?.files?.[0];
+    if (file) await uploadFile(file);
+  });
 }
 
 function mapTimeToClip(timeSec) {
@@ -345,7 +377,7 @@ function mapTimeToClip(timeSec) {
       };
     }
     cursor = end;
-    const tr = transitions.find((t) => t.after_clip === clip.index);
+    const tr = transitions.find((item) => item.after_clip === clip.index);
     if (tr && i < clips.length - 1) {
       cursor -= tr.duration_sec;
     }
@@ -359,7 +391,6 @@ function mapTimeToClip(timeSec) {
 
 async function addZoomAtClick(ev) {
   if (!state.summary?.clips?.length || !els.preview.src) return;
-  // Älä kaappaile kontrollipalkin klikkejä
   const rect = els.preview.getBoundingClientRect();
   if (ev.clientY > rect.bottom - 48) return;
 
@@ -401,7 +432,7 @@ async function addZoomAtClick(ev) {
 async function handleQuick(action) {
   const clips = state.summary?.clips || [];
   if (!clips.length) {
-    showReply("Tuo ensin video, jotta pikakomento toimii.");
+    showReply(t("needVideoFirst"));
     return;
   }
   const clipIndex = state.selectedClip;
@@ -432,7 +463,7 @@ async function handleQuick(action) {
 
   if (action === "fade") {
     if (clips.length < 2) {
-      showReply("Tarvitset vähintään kaksi klippiä siirtymään.");
+      showReply(t("needTwoClips"));
       return;
     }
     const after = Math.min(clipIndex, clips.length - 1);
@@ -467,7 +498,36 @@ async function handleQuick(action) {
   }
 }
 
+function syncLangButtons() {
+  document.querySelectorAll(".lang-btn").forEach((btn) => {
+    const active = btn.dataset.lang === getLang();
+    btn.classList.toggle("is-active", active);
+    btn.setAttribute("aria-pressed", active ? "true" : "false");
+  });
+}
+
+function applyLanguage(lang) {
+  setLang(lang);
+  applyDomTranslations();
+  syncLangButtons();
+  if (state.summary) {
+    // Päivitä dynaamiset UI-merkkijonot heti; serverin description haetaan perään
+    applyState(state.summary);
+  }
+  refreshState()
+    .then(() => {
+      if (!state.busy) setStatus(t("ready"));
+    })
+    .catch(() => {});
+}
+
 function wireEvents() {
+  document.querySelectorAll(".lang-btn").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      if (btn.dataset.lang) applyLanguage(btn.dataset.lang);
+    });
+  });
+
   els.undo.addEventListener("click", () =>
     mutate(() => api("/api/undo", { method: "POST" }))
   );
@@ -482,22 +542,9 @@ function wireEvents() {
     els.fileInput.value = "";
   });
 
-  ["dragenter", "dragover"].forEach((evt) => {
-    els.dropzone.addEventListener(evt, (e) => {
-      e.preventDefault();
-      els.dropzone.classList.add("is-dragover");
-    });
-  });
-  ["dragleave", "drop"].forEach((evt) => {
-    els.dropzone.addEventListener(evt, (e) => {
-      e.preventDefault();
-      els.dropzone.classList.remove("is-dragover");
-    });
-  });
-  els.dropzone.addEventListener("drop", async (e) => {
-    const file = e.dataTransfer?.files?.[0];
-    if (file) await uploadFile(file);
-  });
+  wireDropTarget(els.dropzone);
+  wireDropTarget(els.previewStage);
+
   els.dropzone.addEventListener("keydown", (e) => {
     if (e.key === "Enter" || e.key === " ") {
       e.preventDefault();
@@ -520,18 +567,18 @@ function wireEvents() {
     const message = els.commandInput.value.trim();
     if (!message) return;
     try {
-      setStatus("Käsitellään komentoa…", true);
+      setStatus(t("processingCommand"), true);
       const data = await api("/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ message }),
+        body: JSON.stringify({ message, lang: getLang() }),
       });
-      showReply(data.reply || "Valmis");
+      showReply(data.reply || t("ready"));
       if (data.state) applyState(data.state);
       els.commandInput.value = "";
-      setStatus("Valmis");
+      setStatus(t("ready"));
     } catch (err) {
-      setStatus("Valmis");
+      setStatus(t("ready"));
       showReply(err.message);
     }
   });
@@ -559,10 +606,13 @@ function wireEvents() {
   });
 }
 
+setLang(loadStoredLang());
+applyDomTranslations();
+syncLangButtons();
 wireEvents();
 refreshState()
-  .then(() => setStatus("Valmis"))
+  .then(() => setStatus(t("ready")))
   .catch((err) => {
-    setStatus("Valmis");
-    showReply(err.message || "Tilaa ei voitu ladata");
+    setStatus(t("ready"));
+    showReply(err.message || t("stateLoadFailed"));
   });

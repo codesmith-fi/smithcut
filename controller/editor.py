@@ -31,6 +31,66 @@ REGION_TARGETS: dict[str, tuple[float, float]] = {
     "bottom_right": (0.75, 0.75),
 }
 
+_SUMMARY_I18N: dict[str, dict[str, Any]] = {
+    "fi": {
+        "clip_title": "Klippi {n}",
+        "effect_zoom": "Zoom",
+        "effect_text": "Teksti",
+        "bgm_on": "Taustamusiikki käytössä",
+        "empty": "Aikajana on tyhjä – tuo video aloittaaksesi.",
+        "description": (
+            "Aikajanalla on {count} klippiä, kokonaiskesto {duration} s, "
+            "siirtymiä {transitions}."
+        ),
+        "transitions": {
+            "fadeblack": "Pimennys",
+            "fade": "Häivytys",
+            "wipeleft": "Pyyhkäisy vasemmalle",
+            "wiperight": "Pyyhkäisy oikealle",
+        },
+    },
+    "en": {
+        "clip_title": "Clip {n}",
+        "effect_zoom": "Zoom",
+        "effect_text": "Text",
+        "bgm_on": "Background music on",
+        "empty": "Timeline is empty — import a video to get started.",
+        "description": (
+            "Timeline has {count} clip(s), total duration {duration} s, "
+            "{transitions} transition(s)."
+        ),
+        "transitions": {
+            "fadeblack": "Fade to black",
+            "fade": "Fade",
+            "wipeleft": "Wipe left",
+            "wiperight": "Wipe right",
+        },
+    },
+}
+
+_CHAT_STUB: dict[str, str] = {
+    "fi": (
+        "Paikallinen kielimalli ei ole vielä kytketty. "
+        "Käytä toistaiseksi klippinauhaa, zoomausta esikatselusta "
+        "tai pikakomentoja. (Vaihe 3: Ollama / Qwen)"
+    ),
+    "en": (
+        "The local language model is not connected yet. "
+        "For now use the clip strip, preview zoom, or quick actions. "
+        "(Phase 3: Ollama / Qwen)"
+    ),
+}
+
+
+def normalize_lang(lang: str | None) -> str:
+    value = (lang or "fi").strip().lower()
+    return value if value in _SUMMARY_I18N else "fi"
+
+
+def chat_stub_reply(lang: str = "fi") -> str:
+    """Vaiheen 3 valmiusviesti käyttöliittymän kielellä."""
+    return _CHAT_STUB[normalize_lang(lang)]
+
 
 def _new_id(prefix: str) -> str:
     return f"{prefix}_{uuid.uuid4().hex[:8]}"
@@ -358,8 +418,11 @@ class EditorController:
         self.timeline = nxt
         return True
 
-    def get_state_summary(self) -> dict[str, Any]:
+    def get_state_summary(self, lang: str = "fi") -> dict[str, Any]:
         """Selkokielinen 1-pohjainen yhteenveto UI:ta ja LLM:ää varten."""
+        lang = normalize_lang(lang)
+        L = _SUMMARY_I18N[lang]
+
         clips_summary = []
         for i, clip in enumerate(self.timeline.clips):
             source = self.timeline.sources.get(clip.source_id)
@@ -369,6 +432,7 @@ class EditorController:
                     effects.append(
                         {
                             "type": "zoom",
+                            "label": L["effect_zoom"],
                             "start_sec": effect.start_sec,
                             "duration": effect.duration,
                             "target_x": effect.target_x,
@@ -380,15 +444,18 @@ class EditorController:
                     effects.append(
                         {
                             "type": "text",
+                            "label": L["effect_text"],
                             "text": effect.text,
                             "start_sec": effect.start_sec,
                             "duration": effect.duration,
                             "position": effect.position,
                         }
                     )
+            clip_index = i + 1
             clips_summary.append(
                 {
-                    "index": i + 1,
+                    "index": clip_index,
+                    "title": L["clip_title"].format(n=clip_index),
                     "id": clip.id,
                     "source_id": clip.source_id,
                     "source_path": source.path if source else None,
@@ -402,10 +469,12 @@ class EditorController:
 
         transitions_summary = []
         for t in self.timeline.transitions:
+            after = t.after_clip_index + 1
             transitions_summary.append(
                 {
-                    "after_clip": t.after_clip_index + 1,
+                    "after_clip": after,
                     "type": t.type,
+                    "label": L["transitions"].get(t.type, t.type),
                     "duration_sec": t.duration,
                 }
             )
@@ -429,15 +498,29 @@ class EditorController:
                 "bgm_volume": self.timeline.bgm.bgm_volume,
                 "sfx_volume": self.timeline.bgm.sfx_volume,
                 "fade_out_sec": self.timeline.bgm.fade_out_sec,
+                "label": L["bgm_on"],
             }
 
+        total = round(self.timeline.total_duration(), 3)
+        n_clips = len(self.timeline.clips)
+        if n_clips == 0:
+            description = L["empty"]
+        else:
+            description = L["description"].format(
+                count=n_clips,
+                duration=total,
+                transitions=len(self.timeline.transitions),
+            )
+
         return {
-            "clip_count": len(self.timeline.clips),
+            "lang": lang,
+            "description": description,
+            "clip_count": n_clips,
             "clips": clips_summary,
             "transitions": transitions_summary,
             "sources": sources_summary,
             "bgm": bgm,
-            "total_duration_sec": round(self.timeline.total_duration(), 3),
+            "total_duration_sec": total,
             "output_fps": self.timeline.output_fps,
             "can_undo": self.history.can_undo(),
             "can_redo": self.history.can_redo(),
