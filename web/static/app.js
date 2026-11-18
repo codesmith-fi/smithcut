@@ -11,6 +11,7 @@ const state = {
   summary: null,
   selectedClip: 1,
   busy: false,
+  pollTimer: null,
 };
 
 const els = {
@@ -36,12 +37,84 @@ const els = {
   textPosition: document.getElementById("text-position"),
   textFontStyle: document.getElementById("text-font-style"),
   textCancel: document.getElementById("text-cancel"),
+  progress: document.getElementById("topbar-progress"),
+  progressBar: document.getElementById("topbar-progress-bar"),
 };
 
 function setStatus(message, busy = false) {
   state.busy = busy;
   els.status.textContent = message;
   els.status.classList.toggle("is-busy", busy);
+  if (!busy) {
+    stopProgressPoll();
+    setProgressBar(null);
+  }
+}
+
+function setProgressBar(percent) {
+  if (!els.progress || !els.progressBar) return;
+  if (percent === null || percent === undefined) {
+    els.progress.hidden = true;
+    els.progress.classList.remove("is-indeterminate");
+    els.progressBar.style.width = "0%";
+    return;
+  }
+  els.progress.hidden = false;
+  if (percent < 0) {
+    els.progress.classList.add("is-indeterminate");
+    els.progressBar.style.width = "35%";
+  } else {
+    els.progress.classList.remove("is-indeterminate");
+    els.progressBar.style.width = `${Math.min(100, Math.max(0, percent))}%`;
+  }
+}
+
+function statusFromProgress(progress) {
+  if (!progress || !progress.active) return t("ready");
+  const phase = progress.phase;
+  const pct = progress.percent;
+  if (phase === "chat") return t("processingCommandQwen");
+  if (phase === "export") {
+    return pct == null ? t("creatingFinal") : t("creatingFinalPct", { percent: pct });
+  }
+  if (phase === "preview") {
+    return pct == null ? t("updatingPreview") : t("updatingPreviewPct", { percent: pct });
+  }
+  return progress.detail || t("updating");
+}
+
+function applyProgress(progress) {
+  if (!progress || !progress.active) {
+    setProgressBar(null);
+    return;
+  }
+  setStatus(statusFromProgress(progress), true);
+  if (progress.phase === "chat" || progress.percent == null) {
+    setProgressBar(-1);
+  } else {
+    setProgressBar(progress.percent);
+  }
+}
+
+function stopProgressPoll() {
+  if (state.pollTimer) {
+    clearInterval(state.pollTimer);
+    state.pollTimer = null;
+  }
+}
+
+function startProgressPoll() {
+  stopProgressPoll();
+  const tick = async () => {
+    try {
+      const data = await fetch("/api/status").then((r) => r.json());
+      if (data?.progress) applyProgress(data.progress);
+    } catch {
+      /* pollausvirheet eivät keskeytä päätoimintoa */
+    }
+  };
+  tick();
+  state.pollTimer = setInterval(tick, 300);
 }
 
 function withLang(path) {
@@ -321,6 +394,8 @@ async function mutate(fn, { renderPreview = true } = {}) {
 
 async function runRender(mode) {
   setStatus(mode === "final" ? t("creatingFinal") : t("updatingPreview"), true);
+  setProgressBar(0);
+  startProgressPoll();
   try {
     const data = await api("/api/render", {
       method: "POST",
@@ -586,7 +661,9 @@ function wireEvents() {
     const message = els.commandInput.value.trim();
     if (!message) return;
     try {
-      setStatus(t("processingCommand"), true);
+      setStatus(t("processingCommandQwen"), true);
+      setProgressBar(-1);
+      startProgressPoll();
       const data = await api("/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },

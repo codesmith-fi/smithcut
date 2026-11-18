@@ -142,7 +142,17 @@ def create_app(
     @app.get("/api/state")
     def api_state(lang: str = Query(default="fi")) -> dict[str, Any]:
         code = _lang_from_request(lang)
-        return {"ok": True, "state": _state_payload(get_editor(), lang=code)}
+        editor = get_editor()
+        return {
+            "ok": True,
+            "state": _state_payload(editor, lang=code),
+            "progress": editor.get_progress(),
+        }
+
+    @app.get("/api/status")
+    def api_status() -> dict[str, Any]:
+        """Kevyt edistymistilapollaus (ei levyoperaatioita)."""
+        return {"ok": True, "progress": get_editor().get_progress()}
 
     @app.post("/api/upload", response_model=None)
     async def api_upload(
@@ -356,20 +366,30 @@ def create_app(
 
         code = _lang_from_request(body.lang)
         editor = get_editor()
-        result = run_agent(editor, body.message, lang=code)
-        return {
-            "ok": True,
-            "ready": result.ready,
-            "lang": code,
-            "reply": result.reply,
-            "changed": result.changed,
-            "tool_calls": result.tool_calls,
-            "error": result.error,
-            "echo": body.message.strip(),
-            "state": _state_payload(editor, lang=code),
-            # Taaksepäin yhteensopiva stub-kenttä (Vaihe 2 testit)
-            "fallback_hint": None if result.ready else chat_stub_reply(code),
-        }
+        editor.set_progress(
+            active=True,
+            phase="chat",
+            percent=None,
+            detail="Processing command (Qwen3)",
+        )
+        try:
+            result = run_agent(editor, body.message, lang=code)
+            return {
+                "ok": True,
+                "ready": result.ready,
+                "lang": code,
+                "reply": result.reply,
+                "changed": result.changed,
+                "tool_calls": result.tool_calls,
+                "error": result.error,
+                "echo": body.message.strip(),
+                "state": _state_payload(editor, lang=code),
+                "progress": editor.get_progress(),
+                # Taaksepäin yhteensopiva stub-kenttä (Vaihe 2 testit)
+                "fallback_hint": None if result.ready else chat_stub_reply(code),
+            }
+        finally:
+            editor.clear_progress()
 
     @app.get("/media/{file_path:path}")
     async def serve_media(file_path: str, request: Request) -> FileResponse:

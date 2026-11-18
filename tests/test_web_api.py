@@ -32,7 +32,17 @@ def client(workspace: Path):
     editor = EditorController(workspace=workspace)
     application = create_app(workspace=workspace, editor=editor)
 
-    def fake_render(timeline, output_path=None, mode="preview", workspace=None):
+    def fake_render(
+        timeline,
+        output_path=None,
+        mode="preview",
+        workspace=None,
+        on_progress=None,
+        total_duration=None,
+    ):
+        if on_progress is not None:
+            on_progress(0)
+            on_progress(100)
         path = Path(output_path)
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(b"\x00\x00\x00\x18ftypmp42fake")

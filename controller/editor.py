@@ -110,6 +110,12 @@ class EditorController:
         self.workspace.mkdir(parents=True, exist_ok=True)
         self.timeline = timeline or Timeline()
         self.history = HistoryManager()
+        self._progress: dict[str, Any] = {
+            "active": False,
+            "phase": "idle",
+            "percent": None,
+            "detail": "",
+        }
 
     # ------------------------------------------------------------------
     # Sisäiset apurit
@@ -117,6 +123,30 @@ class EditorController:
 
     def _checkpoint(self) -> None:
         self.history.push(self.timeline)
+
+    def set_progress(
+        self,
+        *,
+        active: bool,
+        phase: str = "idle",
+        percent: int | None = None,
+        detail: str = "",
+    ) -> None:
+        """Päivitä ajonaikainen edistymistila (render / chat)."""
+        clamped = None if percent is None else min(100, max(0, int(percent)))
+        self._progress = {
+            "active": bool(active),
+            "phase": phase,
+            "percent": clamped,
+            "detail": detail,
+        }
+
+    def clear_progress(self) -> None:
+        self.set_progress(active=False, phase="idle", percent=None, detail="")
+
+    def get_progress(self) -> dict[str, Any]:
+        """Palauta kevyt kopio edistymistilasta (pollaukseen)."""
+        return dict(self._progress)
 
     def _clip(self, clip_index: int) -> Clip:
         if clip_index < 0 or clip_index >= len(self.timeline.clips):
@@ -572,11 +602,30 @@ class EditorController:
     def render(self, mode: str = "preview") -> str:
         if mode not in ("preview", "final"):
             raise ValueError("mode must be 'preview' or 'final'")
+        phase = "preview" if mode == "preview" else "export"
+        detail = "Updating preview" if mode == "preview" else "Exporting final video"
+        self.set_progress(active=True, phase=phase, percent=0, detail=detail)
         suffix = "preview" if mode == "preview" else "final"
         output = self.workspace / f"cutsmith_{suffix}.mp4"
-        return ffmpeg_render(
-            self.timeline,
-            output_path=output,
-            mode=mode,  # type: ignore[arg-type]
-            workspace=self.workspace,
-        )
+
+        def _on_progress(percent: int) -> None:
+            self.set_progress(
+                active=True,
+                phase=phase,
+                percent=percent,
+                detail=detail,
+            )
+
+        try:
+            path = ffmpeg_render(
+                self.timeline,
+                output_path=output,
+                mode=mode,  # type: ignore[arg-type]
+                workspace=self.workspace,
+                on_progress=_on_progress,
+                total_duration=self.timeline.total_duration(),
+            )
+            self.set_progress(active=True, phase=phase, percent=100, detail=detail)
+            return path
+        finally:
+            self.clear_progress()

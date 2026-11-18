@@ -8,8 +8,11 @@ const dictionaries = {
     ready: "Valmis",
     updating: "Päivitetään…",
     updatingPreview: "Päivitetään esikatselua…",
+    updatingPreviewPct: "Päivitetään esikatselua… {percent} %",
     creatingFinal: "Luodaan valmista videota…",
+    creatingFinalPct: "Luodaan valmista videota… {percent} %",
     processingCommand: "Käsitellään komentoa…",
+    processingCommandQwen: "Käsitellään komentoa (Qwen3)…",
     finalReady: "Valmis video luotu",
     finalReadyReply:
       "Valmis video on valmis – voit avata sen esikatselusta tai workspace-kansiosta.",
@@ -85,8 +88,11 @@ const dictionaries = {
     ready: "Ready",
     updating: "Updating…",
     updatingPreview: "Updating preview…",
+    updatingPreviewPct: "Updating preview… {percent}%",
     creatingFinal: "Creating final video…",
+    creatingFinalPct: "Creating final video… {percent}%",
     processingCommand: "Processing command…",
+    processingCommandQwen: "Processing command (Qwen3)…",
     finalReady: "Final video created",
     finalReadyReply:
       "Your final video is ready — open it from the preview or the workspace folder.",

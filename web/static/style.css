@@ -60,6 +60,7 @@ body {
 }
 
 .topbar {
+  position: relative;
   display: flex;
   align-items: center;
   gap: 1rem;
@@ -69,6 +70,34 @@ body {
   border-radius: calc(var(--radius) + 2px);
   backdrop-filter: blur(12px);
   box-shadow: var(--shadow);
+  overflow: hidden;
+}
+
+.topbar-progress {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 3px;
+  background: rgba(255, 255, 255, 0.06);
+  pointer-events: none;
+}
+
+.topbar-progress-bar {
+  height: 100%;
+  width: 0%;
+  background: linear-gradient(90deg, var(--accent), #86dccb);
+  transition: width 0.2s ease;
+}
+
+.topbar-progress.is-indeterminate .topbar-progress-bar {
+  width: 35%;
+  animation: progress-slide 1.1s ease-in-out infinite;
+}
+
+@keyframes progress-slide {
+  0% { transform: translateX(-120%); }
+  100% { transform: translateX(320%); }
 }
 
 .brand {

@@ -5,6 +5,8 @@ from __future__ import annotations
 import os
 import subprocess
 import tempfile
+import threading
+from collections.abc import Callable
 from pathlib import Path
 from typing import Literal
 
@@ -447,13 +449,36 @@ def build_command(
     return cmd
 
 
+def percent_from_out_time_us(out_time_us: int, total_duration_sec: float) -> int:
+    """Laske valmistumisprosentti 0..100 out_time_us / kokonaiskesto -suhteesta."""
+    if total_duration_sec <= 0 or out_time_us <= 0:
+        return 0
+    pct = int((out_time_us / (total_duration_sec * 1_000_000)) * 100)
+    return min(100, max(0, pct))
+
+
+def parse_progress_value(line: str) -> tuple[str, str] | None:
+    """Parsii FFmpeg `-progress`-rivin (`key=value`)."""
+    line = line.strip()
+    if not line or "=" not in line:
+        return None
+    key, _, value = line.partition("=")
+    return key.strip(), value.strip()
+
+
 def render(
     timeline: Timeline,
     output_path: str | Path | None = None,
     mode: RenderMode = "preview",
     workspace: str | Path | None = None,
+    on_progress: Callable[[int], None] | None = None,
+    total_duration: float | None = None,
 ) -> str:
-    """Suorita ffmpeg ja palauta tulostiedoston polku."""
+    """Suorita ffmpeg ja palauta tulostiedoston polku.
+
+    Kun ``on_progress`` annetaan, käytetään ``-progress pipe:1 -nostats``
+    ja kutsutaan callbackia prosentilla 0..100.
+    """
     validate_timeline(timeline)
     if output_path is None:
         root = Path(workspace) if workspace else Path(tempfile.gettempdir())
@@ -465,6 +490,17 @@ def render(
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
     cmd = build_command(timeline, output_path, mode=mode)
+    duration = (
+        float(total_duration)
+        if total_duration is not None
+        else float(timeline.total_duration())
+    )
+
+    if on_progress is not None:
+        # -progress pipe:1 ennen tulostiedostoa
+        cmd = cmd[:-1] + ["-progress", "pipe:1", "-nostats"] + [cmd[-1]]
+        return _render_with_progress(cmd, output_path, duration, on_progress)
+
     result = subprocess.run(
         cmd,
         capture_output=True,
@@ -475,6 +511,65 @@ def render(
     if result.returncode != 0:
         detail = (result.stderr or result.stdout or "").strip()
         raise RuntimeError(f"ffmpeg render failed:\n{detail}")
+    return str(output_path)
+
+
+def _render_with_progress(
+    cmd: list[str],
+    output_path: Path,
+    total_duration: float,
+    on_progress: Callable[[int], None],
+) -> str:
+    proc = subprocess.Popen(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        env=_env(),
+        bufsize=1,
+    )
+    stderr_chunks: list[str] = []
+
+    def _drain_stderr() -> None:
+        assert proc.stderr is not None
+        for chunk in proc.stderr:
+            stderr_chunks.append(chunk)
+
+    reader = threading.Thread(target=_drain_stderr, daemon=True)
+    reader.start()
+
+    last_percent = -1
+    try:
+        on_progress(0)
+        assert proc.stdout is not None
+        for raw in proc.stdout:
+            parsed = parse_progress_value(raw)
+            if parsed is None:
+                continue
+            key, value = parsed
+            if key == "out_time_us":
+                try:
+                    out_us = int(value)
+                except ValueError:
+                    continue
+                percent = percent_from_out_time_us(out_us, total_duration)
+                if percent != last_percent:
+                    last_percent = percent
+                    on_progress(percent)
+            elif key == "progress" and value == "end":
+                if last_percent < 100:
+                    on_progress(100)
+        returncode = proc.wait()
+    finally:
+        reader.join(timeout=5)
+        if proc.poll() is None:
+            proc.kill()
+
+    if returncode != 0:
+        detail = "".join(stderr_chunks).strip()
+        raise RuntimeError(f"ffmpeg render failed:\n{detail}")
+    if last_percent < 100:
+        on_progress(100)
     return str(output_path)
 
 
