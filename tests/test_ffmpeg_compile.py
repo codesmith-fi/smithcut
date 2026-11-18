@@ -8,9 +8,10 @@ import pytest
 
 from compiler.ffmpeg import (
     PREVIEW_HEIGHT,
-    PREVIEW_WIDTH,
     build_command,
     build_filter_complex,
+    is_simple_preview_timeline,
+    normalize_render_mode,
     reset_nvenc_cache,
     validate_timeline,
 )
@@ -108,8 +109,9 @@ def test_three_clip_filter_contains_xfade_zoompan_drawtext():
     # Toinen: 5 + 5 - 0.4 - 0.4 = 9.2
     assert "offset=9.200000" in fc
 
-    # Preview-skaalaus
-    assert f"scale={PREVIEW_WIDTH}:{PREVIEW_HEIGHT}" in fc or f"s={PREVIEW_WIDTH}x{PREVIEW_HEIGHT}" in fc
+    # Preview-skaalaus: scale=-2:480 + parilliset mitat
+    assert f"scale=-2:{PREVIEW_HEIGHT}" in fc
+    assert "scale=trunc(iw/2)*2:trunc(ih/2)*2" in fc
 
 
 def test_filter_uses_trim_and_setpts_per_clip():
@@ -153,37 +155,53 @@ def test_bgm_mix_in_filter():
     assert "afade=t=out" in fc
 
 
-@patch("compiler.ffmpeg.nvenc_available", return_value=False)
-def test_preview_command_falls_back_to_libx264(_nvenc):
+def test_normalize_render_mode():
+    assert normalize_render_mode("preview") == "preview"
+    assert normalize_render_mode("export") == "export"
+    assert normalize_render_mode("final") == "export"
+
+
+def test_preview_vs_export_profiles():
     tl = make_three_clip_timeline()
-    cmd = build_command(tl, "/tmp/out.mp4", mode="preview")
-    assert cmd[0] == "ffmpeg"
-    assert "-filter_complex" in cmd
-    assert "libx264" in cmd
-    assert "-preset" in cmd
-    assert "ultrafast" in cmd
-    assert "1280x720" in cmd
-    assert cmd[-1] == "/tmp/out.mp4"
+    preview = build_command(tl, "/tmp/out.mp4", mode="preview")
+    assert preview[0] == "ffmpeg"
+    assert "-filter_complex" in preview
+    assert "libx264" in preview
+    assert "ultrafast" in preview
+    assert "28" in preview
+    assert "-threads" in preview
+    assert "96k" in preview
+    # 1920x1080 → 480p: leveys parilliseksi (852)
+    assert "852x480" in preview
+    fc_preview = preview[preview.index("-filter_complex") + 1]
+    assert f"scale=-2:{PREVIEW_HEIGHT}" in fc_preview
+
+    with patch("compiler.ffmpeg.nvenc_available", return_value=False):
+        export = build_command(tl, "/tmp/final.mp4", mode="export")
+    assert "medium" in export
+    assert "libx264" in export
+    assert "18" in export
+    assert "192k" in export
+    assert "852x480" not in export
+    fc_export = export[export.index("-filter_complex") + 1]
+    assert "scale=1920:1080" in fc_export
+    assert f"scale=-2:{PREVIEW_HEIGHT}" not in fc_export
+
+    # final on alias exportille
+    with patch("compiler.ffmpeg.nvenc_available", return_value=False):
+        final = build_command(tl, "/tmp/final2.mp4", mode="final")
+    assert "192k" in final
+    assert "medium" in final
 
 
-@patch("compiler.ffmpeg.nvenc_available", return_value=True)
-def test_preview_command_uses_nvenc_when_available(_nvenc):
+def test_simple_preview_timeline_detection():
     tl = make_three_clip_timeline()
-    cmd = build_command(tl, "/tmp/out.mp4", mode="preview")
-    assert "h264_nvenc" in cmd
-    assert "p1" in cmd
-
-
-@patch("compiler.ffmpeg.nvenc_available", return_value=False)
-def test_final_command_native_resolution_high_quality(_nvenc):
-    tl = make_three_clip_timeline()
-    cmd = build_command(tl, "/tmp/final.mp4", mode="final")
-    assert "libx264" in cmd
-    assert "18" in cmd  # crf 18
-    # Ei pakota 720p
-    assert "1280x720" not in cmd
-    fc = cmd[cmd.index("-filter_complex") + 1]
-    assert "scale=1920:1080" in fc
+    assert is_simple_preview_timeline(tl) is False
+    simple = Timeline(
+        sources=tl.sources,
+        clips=[Clip(id="c0", source_id="src1", in_sec=0, out_sec=3)],
+    )
+    assert is_simple_preview_timeline(simple) is True
 
 
 def test_lc_all_c_in_render_env():

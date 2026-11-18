@@ -62,7 +62,7 @@ class EffectRequest(BaseModel):
 
 
 class RenderRequest(BaseModel):
-    mode: Literal["preview", "final"] = "preview"
+    mode: Literal["preview", "final", "export"] = "preview"
 
 
 class ChatRequest(BaseModel):

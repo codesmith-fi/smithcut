@@ -488,6 +488,7 @@ async function addZoomAtClick(ev) {
   const rect = els.preview.getBoundingClientRect();
   if (ev.clientY > rect.bottom - 48) return;
 
+  // Suhteelliset 0..1 -koordinaatit: toimivat preview- ja full-resoluutiossa samoin
   const x = (ev.clientX - rect.left) / rect.width;
   const y = (ev.clientY - rect.top) / rect.height;
   if (x < 0 || x > 1 || y < 0 || y > 1) return;

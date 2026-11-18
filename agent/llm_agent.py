@@ -17,7 +17,7 @@ from controller.editor import EditorController, normalize_lang
 
 DEFAULT_OLLAMA_URL = "http://localhost:11434"
 DEFAULT_MODEL = "qwen3:8b"
-KEEP_ALIVE = "15s"
+KEEP_ALIVE = "5m"
 MAX_TOOL_ROUNDS = 8
 
 _ERROR_I18N = {
@@ -88,10 +88,13 @@ def _system_prompt(lang: str, state_summary: dict[str, Any]) -> str:
         )
 
     return (
+        "/no_think\n"
         "You are CutSmith, a friendly local video-editing assistant.\n"
         f"{language_line}\n"
         "Use tools to edit the timeline. Clip and transition indices are "
         "1-based (the first clip is 1; after_clip=1 is between clip 1 and 2).\n"
+        "Batch all needed tool calls first; do not ask the user to preview — "
+        "the app renders preview once after you finish.\n"
         "After tools finish, give a short plain-language confirmation of what changed.\n"
         "Current timeline summary (JSON):\n"
         f"{json.dumps(state_summary, ensure_ascii=False)}"
@@ -137,6 +140,8 @@ def _chat_once(
         "tools": OLLAMA_TOOLS,
         "stream": False,
         "keep_alive": KEEP_ALIVE,
+        # Qwen3: kytke sisäinen ajatteluketju pois (nopeampi tool calling)
+        "think": False,
     }
     try:
         response = client.post(f"{_ollama_base()}/api/chat", json=payload)

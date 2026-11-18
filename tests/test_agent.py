@@ -116,10 +116,12 @@ def test_run_agent_tool_then_reply():
     assert any(
         getattr(e, "text", None) == "Hei" for e in editor.timeline.clips[0].effects
     )
-    # keep_alive VRAM-vapautukseen
     payload = mock_client.post.call_args_list[0].kwargs["json"]
-    assert payload["keep_alive"] == "15s"
+    assert payload["keep_alive"] == "5m"
+    assert payload["think"] is False
     assert payload["model"] == "qwen3:8b"
+    system = mock_client.post.call_args_list[0].kwargs["json"]["messages"][0]["content"]
+    assert "/no_think" in system
 
 
 def test_run_agent_unreachable_localized():

@@ -18,12 +18,23 @@ from model.timeline import (
     ZoomEffect,
 )
 
-RenderMode = Literal["preview", "final"]
+RenderMode = Literal["preview", "final", "export"]
+RenderProfile = Literal["preview", "export"]
 
 _NVENC_CHECKED: bool | None = None
 
-PREVIEW_WIDTH = 1280
-PREVIEW_HEIGHT = 720
+PREVIEW_HEIGHT = 480
+
+
+def normalize_render_mode(mode: str) -> RenderProfile:
+    """Normalisoi API-tila → sisäinen profiili (preview | export)."""
+    if mode in ("final", "export"):
+        return "export"
+    return "preview"
+
+
+def _even_dim(value: int) -> int:
+    return max(2, int(value) - (int(value) % 2))
 
 
 def _env() -> dict[str, str]:
@@ -220,11 +231,25 @@ def _atempo_chain(speed: float) -> str:
     return ",".join(filters)
 
 
-def _output_size(timeline: Timeline, mode: RenderMode) -> tuple[int, int]:
-    if mode == "preview":
-        return PREVIEW_WIDTH, PREVIEW_HEIGHT
+def _output_size(timeline: Timeline, mode: RenderMode | str) -> tuple[int, int]:
+    profile = normalize_render_mode(mode)
     first = timeline.sources[timeline.clips[0].source_id]
-    return first.width, first.height
+    if profile == "preview":
+        height = PREVIEW_HEIGHT
+        width = _even_dim(int(round(first.width * height / first.height)))
+        return width, height
+    return _even_dim(first.width), _even_dim(first.height)
+
+
+def is_simple_preview_timeline(timeline: Timeline) -> bool:
+    """Yksi klippi ilman tehosteita/siirtymiä/BGM → kevyt esikatselupolku."""
+    return (
+        len(timeline.clips) == 1
+        and not timeline.clips[0].effects
+        and not timeline.transitions
+        and timeline.bgm is None
+        and timeline.clips[0].speed == 1.0
+    )
 
 
 def _source_input_map(timeline: Timeline) -> tuple[list[str], dict[str, int]]:
@@ -278,6 +303,8 @@ def _clip_video_filter(
     width: int,
     height: int,
     fps: int,
+    *,
+    profile: RenderProfile = "preview",
 ) -> str:
     parts = [
         f"[{input_index}:v]trim=start={clip.in_sec}:end={clip.out_sec}",
@@ -285,15 +312,24 @@ def _clip_video_filter(
     ]
     if clip.speed != 1.0:
         parts.append(f"setpts=PTS/{clip.speed}")
-    parts.extend(
-        [
-            f"fps={fps}",
-            f"scale={width}:{height}:force_original_aspect_ratio=decrease",
-            f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2",
-            "setsar=1",
-            "format=yuv420p",
-        ]
-    )
+    parts.append(f"fps={fps}")
+    if profile == "preview":
+        # Kevyt 480p-esikatselu: scale=-2:480 + parilliset mitat
+        parts.extend(
+            [
+                f"scale=-2:{PREVIEW_HEIGHT}",
+                "scale=trunc(iw/2)*2:trunc(ih/2)*2",
+                f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2",
+            ]
+        )
+    else:
+        parts.extend(
+            [
+                f"scale={width}:{height}:force_original_aspect_ratio=decrease",
+                f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2",
+            ]
+        )
+    parts.extend(["setsar=1", "format=yuv420p"])
     parts.extend(_effect_filters(clip, width, height, fps))
     return ",".join(parts) + f"[{out_label}]"
 
@@ -320,11 +356,13 @@ def _clip_audio_filter(
     return ",".join(parts) + f"[{out_label}]"
 
 
-def build_filter_complex(timeline: Timeline, mode: RenderMode = "preview") -> str:
+def build_filter_complex(timeline: Timeline, mode: RenderMode | str = "preview") -> str:
     """Käännä Timeline deterministiseksi filter_complex -merkkijonoksi."""
     validate_timeline(timeline)
-    width, height = _output_size(timeline, mode)
-    fps = timeline.output_fps
+    profile = normalize_render_mode(mode)
+    width, height = _output_size(timeline, profile)
+    # Esikatselu: hieman alempi FPS nopeuttaa pitkiä videoita
+    fps = min(timeline.output_fps, 30) if profile == "preview" else timeline.output_fps
     paths, index_by_id = _source_input_map(timeline)
 
     lines: list[str] = []
@@ -336,7 +374,11 @@ def build_filter_complex(timeline: Timeline, mode: RenderMode = "preview") -> st
         inp = index_by_id[clip.source_id]
         v_out = f"v{i}"
         a_out = f"a{i}"
-        lines.append(_clip_video_filter(clip, inp, v_out, width, height, fps))
+        lines.append(
+            _clip_video_filter(
+                clip, inp, v_out, width, height, fps, profile=profile
+            )
+        )
         lines.append(_clip_audio_filter(clip, source, inp, a_out))
         video_labels.append(v_out)
         audio_labels.append(a_out)
@@ -401,26 +443,45 @@ def build_filter_complex(timeline: Timeline, mode: RenderMode = "preview") -> st
     return ";\n".join(lines)
 
 
-def _encoder_args(mode: RenderMode) -> list[str]:
-    use_nvenc = nvenc_available()
-    if mode == "preview":
-        if use_nvenc:
-            return ["-c:v", "h264_nvenc", "-preset", "p1", "-cq", "28"]
-        return ["-c:v", "libx264", "-preset", "ultrafast", "-crf", "28"]
-    if use_nvenc:
-        return ["-c:v", "h264_nvenc", "-preset", "p4", "-cq", "19"]
-    return ["-c:v", "libx264", "-preset", "slow", "-crf", "18"]
+def _encoder_args(mode: RenderMode | str) -> list[str]:
+    profile = normalize_render_mode(mode)
+    if profile == "preview":
+        # Nopea CPU-esikatselu (ultrafast) – ennustettava myös ilman NVENC:iä
+        return [
+            "-c:v",
+            "libx264",
+            "-preset",
+            "ultrafast",
+            "-crf",
+            "28",
+            "-threads",
+            "0",
+        ]
+    # export: korkea laatu, natiiviresoluutio
+    if nvenc_available():
+        return ["-c:v", "h264_nvenc", "-preset", "p4", "-cq", "18"]
+    return [
+        "-c:v",
+        "libx264",
+        "-preset",
+        "medium",
+        "-crf",
+        "18",
+        "-threads",
+        "0",
+    ]
 
 
 def build_command(
     timeline: Timeline,
     output_path: str | Path,
-    mode: RenderMode = "preview",
+    mode: RenderMode | str = "preview",
 ) -> list[str]:
-    """Rakenna täydellinen ffmpeg-komento listana."""
+    """Rakenna täydellinen ffmpeg-komento listana (preview | export/final)."""
     validate_timeline(timeline)
+    profile = normalize_render_mode(mode)
     paths, _ = _source_input_map(timeline)
-    filter_complex = build_filter_complex(timeline, mode=mode)
+    filter_complex = build_filter_complex(timeline, mode=profile)
 
     cmd: list[str] = ["ffmpeg", "-y", "-hide_banner"]
     for path in paths:
@@ -438,15 +499,29 @@ def build_command(
             "[aout]",
         ]
     )
-    cmd.extend(_encoder_args(mode))
-    cmd.extend(["-c:a", "aac", "-b:a", "192k", "-r", str(timeline.output_fps)])
+    cmd.extend(_encoder_args(profile))
+    audio_bitrate = "96k" if profile == "preview" else "192k"
+    out_fps = (
+        min(timeline.output_fps, 30) if profile == "preview" else timeline.output_fps
+    )
+    cmd.extend(["-c:a", "aac", "-b:a", audio_bitrate, "-r", str(out_fps)])
 
-    if mode == "preview":
-        width, height = _output_size(timeline, mode)
+    if profile == "preview":
+        width, height = _output_size(timeline, profile)
         cmd.extend(["-s", f"{width}x{height}"])
 
     cmd.append(str(output_path))
     return cmd
+
+
+def compile_timeline(
+    timeline: Timeline,
+    output_path: str | Path,
+    mode: RenderMode | str = "preview",
+    **render_kwargs,
+) -> str:
+    """Selkeä entrypoint: käännä ja renderöi timeline (preview | export)."""
+    return render(timeline, output_path=output_path, mode=mode, **render_kwargs)
 
 
 def percent_from_out_time_us(out_time_us: int, total_duration_sec: float) -> int:
@@ -480,16 +555,17 @@ def render(
     ja kutsutaan callbackia prosentilla 0..100.
     """
     validate_timeline(timeline)
+    profile = normalize_render_mode(mode)
     if output_path is None:
         root = Path(workspace) if workspace else Path(tempfile.gettempdir())
         root.mkdir(parents=True, exist_ok=True)
-        suffix = "preview" if mode == "preview" else "final"
+        suffix = "preview" if profile == "preview" else "final"
         output_path = root / f"cutsmith_{suffix}.mp4"
 
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
-    cmd = build_command(timeline, output_path, mode=mode)
+    cmd = build_command(timeline, output_path, mode=profile)
     duration = (
         float(total_duration)
         if total_duration is not None

@@ -600,12 +600,17 @@ class EditorController:
         return extract_clip_thumbnail(source_path, trim_start, output_path)
 
     def render(self, mode: str = "preview") -> str:
-        if mode not in ("preview", "final"):
-            raise ValueError("mode must be 'preview' or 'final'")
-        phase = "preview" if mode == "preview" else "export"
-        detail = "Updating preview" if mode == "preview" else "Exporting final video"
+        if mode not in ("preview", "final", "export"):
+            raise ValueError("mode must be 'preview', 'final', or 'export'")
+        profile = "preview" if mode == "preview" else "export"
+        phase = profile
+        detail = (
+            "Updating preview"
+            if profile == "preview"
+            else "Rendering final video"
+        )
         self.set_progress(active=True, phase=phase, percent=0, detail=detail)
-        suffix = "preview" if mode == "preview" else "final"
+        suffix = "preview" if profile == "preview" else "final"
         output = self.workspace / f"cutsmith_{suffix}.mp4"
 
         def _on_progress(percent: int) -> None:
@@ -620,7 +625,7 @@ class EditorController:
             path = ffmpeg_render(
                 self.timeline,
                 output_path=output,
-                mode=mode,  # type: ignore[arg-type]
+                mode=profile,
                 workspace=self.workspace,
                 on_progress=_on_progress,
                 total_duration=self.timeline.total_duration(),
