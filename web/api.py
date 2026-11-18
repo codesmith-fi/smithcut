@@ -8,6 +8,10 @@ import uuid
 from pathlib import Path
 from typing import Any, Literal, Optional
 
+from dotenv import load_dotenv
+
+load_dotenv()
+
 from fastapi import FastAPI, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles

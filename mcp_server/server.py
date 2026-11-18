@@ -4,6 +4,10 @@ from __future__ import annotations
 
 from typing import Any
 
+from dotenv import load_dotenv
+
+load_dotenv()
+
 from mcp.server.mcpserver import MCPServer
 
 from agent.tools import execute_tool

@@ -8,6 +8,9 @@ from dataclasses import dataclass, field
 from typing import Any
 
 import httpx
+from dotenv import load_dotenv
+
+load_dotenv()
 
 from agent.tools import OLLAMA_TOOLS, execute_tool
 from controller.editor import EditorController, normalize_lang
@@ -64,7 +67,11 @@ def _model_name() -> str:
 
 
 def _ollama_base() -> str:
-    return os.environ.get("CUTSMITH_OLLAMA_URL", DEFAULT_OLLAMA_URL).rstrip("/")
+    return (
+        os.environ.get("OLLAMA_HOST")
+        or os.environ.get("CUTSMITH_OLLAMA_URL")
+        or DEFAULT_OLLAMA_URL
+    ).rstrip("/")
 
 
 def _system_prompt(lang: str, state_summary: dict[str, Any]) -> str:
