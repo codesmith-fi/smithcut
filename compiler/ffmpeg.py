@@ -477,15 +477,25 @@ def build_filter_complex(timeline: Timeline, mode: RenderMode | str = "preview")
         out_a = f"ax{i}"
 
         if transition is not None:
-            xfade_offset = offset - transition.duration
+            left_dur = timeline.clips[i - 1].duration
+            right_dur = timeline.clips[i].duration
+            # duration täytyy mahtua molempiin klipeihin (FFmpeg xfade/acrossfade)
+            dur = min(float(transition.duration), left_dur - 1e-3, right_dur - 1e-3)
+            if dur <= 0:
+                raise ValueError(
+                    f"transition after clip {i} has non-positive duration "
+                    f"({transition.duration}s) for clips "
+                    f"({left_dur:.3f}s, {right_dur:.3f}s)"
+                )
+            xfade_offset = max(0.0, offset - dur)
             lines.append(
                 f"[{current_v}][{next_v}]xfade=transition={transition.type}"
-                f":duration={transition.duration}:offset={xfade_offset:.6f}[{out_v}]"
+                f":duration={dur:.6f}:offset={xfade_offset:.6f}[{out_v}]"
             )
             lines.append(
-                f"[{current_a}][{next_a}]acrossfade=d={transition.duration}[{out_a}]"
+                f"[{current_a}][{next_a}]acrossfade=d={dur:.6f}[{out_a}]"
             )
-            offset = offset + timeline.clips[i].duration - transition.duration
+            offset = max(0.0, offset + timeline.clips[i].duration - dur)
         else:
             lines.append(f"[{current_v}][{next_v}]concat=n=2:v=1:a=0[{out_v}]")
             lines.append(f"[{current_a}][{next_a}]concat=n=2:v=0:a=1[{out_a}]")

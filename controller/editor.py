@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import hashlib
+import json
+import os
 import uuid
 from pathlib import Path
 from typing import Any
@@ -21,6 +23,9 @@ from model.timeline import (
     VideoSource,
     ZoomEffect,
 )
+
+PROJECT_STATE_FILENAME = "project_state.json"
+PROJECT_STATE_VERSION = 1
 
 REGION_TARGETS: dict[str, tuple[float, float]] = {
     "center": (0.5, 0.5),
@@ -116,10 +121,11 @@ class EditorController:
         self,
         workspace: str | Path | None = None,
         timeline: Timeline | None = None,
+        *,
+        load_persisted: bool = True,
     ) -> None:
         self.workspace = Path(workspace) if workspace else Path("workspace")
         self.workspace.mkdir(parents=True, exist_ok=True)
-        self.timeline = timeline or Timeline()
         self.history = HistoryManager()
         self.playhead_sec: float = 0.0
         self.selection_start_sec: float | None = None
@@ -130,6 +136,14 @@ class EditorController:
             "percent": None,
             "detail": "",
         }
+        self._persist_enabled = True
+        self._state_dirty = False
+        if timeline is not None:
+            self.timeline = timeline
+        elif load_persisted and self._load_project_state():
+            pass  # timeline + playhead/selection ladattu
+        else:
+            self.timeline = Timeline()
 
     # Valinnan minimikesto (sekunteina); lyhyemmät nollataan
     SELECTION_MIN_SEC = 0.05
@@ -138,8 +152,103 @@ class EditorController:
     # Sisäiset apurit
     # ------------------------------------------------------------------
 
+    def _project_state_path(self) -> Path:
+        return Path(self.workspace) / PROJECT_STATE_FILENAME
+
+    def _persist(self) -> None:
+        """Tallenna projektin tila atomisesti workspace/project_state.json -tiedostoon."""
+        if not self._persist_enabled:
+            return
+        path = self._project_state_path()
+        payload = {
+            "version": PROJECT_STATE_VERSION,
+            "playhead_sec": self.playhead_sec,
+            "selection_start_sec": self.selection_start_sec,
+            "selection_end_sec": self.selection_end_sec,
+            "timeline": self.timeline.model_dump(mode="json"),
+        }
+        tmp = path.with_suffix(".json.tmp")
+        try:
+            tmp.write_text(
+                json.dumps(payload, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+            os.replace(tmp, path)
+            self._state_dirty = False
+        except OSError:
+            try:
+                tmp.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+    def _load_project_state(self) -> bool:
+        """Lataa tila levyltä jos lähdevideot ovat yhä olemassa. Palauta True jos ok."""
+        path = self._project_state_path()
+        if not path.is_file():
+            return False
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            raw_tl = data.get("timeline") or {}
+            timeline = Timeline.model_validate(raw_tl)
+        except (OSError, json.JSONDecodeError, ValueError, TypeError):
+            return False
+
+        # Pidä vain lähteet joiden tiedostot ovat levyllä
+        kept_sources: dict[str, VideoSource] = {}
+        for sid, source in timeline.sources.items():
+            if Path(source.path).is_file():
+                kept_sources[sid] = source
+        if not kept_sources and timeline.sources:
+            return False
+
+        kept_clips = [c for c in timeline.clips if c.source_id in kept_sources]
+        n = len(kept_clips)
+        kept_transitions = [
+            t
+            for t in timeline.transitions
+            if 0 <= t.after_clip_index < n - 1
+        ]
+        bgm = timeline.bgm
+        if bgm is not None and not Path(bgm.path).is_file():
+            bgm = None
+
+        self.timeline = Timeline(
+            sources=kept_sources,
+            clips=kept_clips,
+            transitions=kept_transitions,
+            bgm=bgm,
+            output_fps=timeline.output_fps,
+        )
+        try:
+            self.playhead_sec = float(data.get("playhead_sec") or 0.0)
+        except (TypeError, ValueError):
+            self.playhead_sec = 0.0
+        start = data.get("selection_start_sec")
+        end = data.get("selection_end_sec")
+        try:
+            self.selection_start_sec = (
+                float(start) if start is not None else None
+            )
+            self.selection_end_sec = float(end) if end is not None else None
+        except (TypeError, ValueError):
+            self.selection_start_sec = None
+            self.selection_end_sec = None
+        self._clamp_selection_to_total()
+        total = self.timeline.total_duration()
+        self.playhead_sec = (
+            min(max(0.0, self.playhead_sec), total) if total > 0 else 0.0
+        )
+        return True
+
     def _checkpoint(self) -> None:
         self.history.push(self.timeline)
+        self._state_dirty = True
+
+    def _flush_persist(self) -> None:
+        """Kirjoita tila levylle jos mutaatioita on pending."""
+        if getattr(self, "_state_dirty", False):
+            self._persist()
+            self._state_dirty = False
 
     def set_progress(
         self,
@@ -351,6 +460,8 @@ class EditorController:
             )
         left = self.timeline.clips[after_clip_index].duration
         right = self.timeline.clips[after_clip_index + 1].duration
+        if duration <= 0:
+            raise ValueError("transition duration must be > 0")
         if duration >= left or duration >= right:
             raise ValueError(
                 f"transition duration {duration}s must be shorter than "
@@ -360,10 +471,18 @@ class EditorController:
         if transition_type not in allowed:
             raise ValueError(f"unsupported transition type {transition_type!r}")
 
+        # Varmista että duration mahtuu molempiin klipeihin (xfade-offset ≥ 0)
+        safe_duration = min(float(duration), left - 1e-3, right - 1e-3)
+        if safe_duration <= 0:
+            raise ValueError(
+                f"transition duration {duration}s does not fit adjacent clips "
+                f"({left:.3f}s, {right:.3f}s)"
+            )
+
         transition = Transition(
             after_clip_index=after_clip_index,
             type=transition_type,  # type: ignore[arg-type]
-            duration=duration,
+            duration=safe_duration,
         )
         self._checkpoint()
         self.timeline.transitions = [
@@ -373,6 +492,7 @@ class EditorController:
         ]
         self.timeline.transitions.append(transition)
         self.timeline.transitions.sort(key=lambda t: t.after_clip_index)
+        self._flush_persist()
         return transition
 
     def add_zoom(
@@ -487,6 +607,8 @@ class EditorController:
         if previous is None:
             return False
         self.timeline = previous
+        self._state_dirty = True
+        self._flush_persist()
         return True
 
     def redo(self) -> bool:
@@ -494,6 +616,8 @@ class EditorController:
         if nxt is None:
             return False
         self.timeline = nxt
+        self._state_dirty = True
+        self._flush_persist()
         return True
 
     def get_state_summary(self, lang: str = "fi") -> dict[str, Any]:
@@ -620,6 +744,8 @@ class EditorController:
         if sel_start is not None and sel_end is not None:
             sel_duration = round(sel_end - sel_start, 3)
 
+        self._flush_persist()
+
         return {
             "lang": lang,
             "description": description,
@@ -676,6 +802,8 @@ class EditorController:
         elif value > total:
             value = total
         self.playhead_sec = value
+        self._state_dirty = True
+        self._flush_persist()
         return self.playhead_sec
 
     def locate_timeline_sec(self, sec: float) -> tuple[int, float] | None:
@@ -884,12 +1012,16 @@ class EditorController:
         if start_sec is None or end_sec is None:
             self.selection_start_sec = None
             self.selection_end_sec = None
+            self._state_dirty = True
+            self._flush_persist()
             return None, None
 
         total = self.timeline.total_duration()
         if total <= 0:
             self.selection_start_sec = None
             self.selection_end_sec = None
+            self._state_dirty = True
+            self._flush_persist()
             return None, None
 
         start = min(max(0.0, float(start_sec)), total)
@@ -899,16 +1031,22 @@ class EditorController:
         if end - start < self.SELECTION_MIN_SEC:
             self.selection_start_sec = None
             self.selection_end_sec = None
+            self._state_dirty = True
+            self._flush_persist()
             return None, None
 
         self.selection_start_sec = start
         self.selection_end_sec = end
+        self._state_dirty = True
+        self._flush_persist()
         return self.selection_start_sec, self.selection_end_sec
 
     def clear_selection(self) -> None:
         """Tyhjennä aluevalinta."""
         self.selection_start_sec = None
         self.selection_end_sec = None
+        self._state_dirty = True
+        self._flush_persist()
 
     def has_selection(self) -> bool:
         return (
@@ -964,15 +1102,16 @@ class EditorController:
         sel_s = float(self.selection_start_sec)  # type: ignore[arg-type]
         sel_e = float(self.selection_end_sec)  # type: ignore[arg-type]
         requested = float(duration_sec) if duration_sec is not None else (sel_e - sel_s)
+        # xfade vaatii duration < molemmat klipit; pidä pieni marginaali
         max_dur = min(left.duration, right.duration) * 0.9
-        duration = min(max(requested, self.SELECTION_MIN_SEC), max_dur)
-        # set_transition vaatii duration < molemmat klipit
-        duration = min(duration, left.duration - 1e-3, right.duration - 1e-3)
+        max_safe = min(left.duration, right.duration) - 1e-3
+        duration = min(max(requested, self.SELECTION_MIN_SEC), max_dur, max_safe)
         if duration <= self.SELECTION_MIN_SEC:
             raise ValueError("computed crossfade duration is too short")
 
         transition = self.set_transition(boundary, transition_type, duration)
         self.clear_selection()
+        self._flush_persist()
         return transition
 
     def add_blur_to_selection(
@@ -1059,9 +1198,12 @@ class EditorController:
             if profile == "preview"
             else "Rendering final video"
         )
+        self._flush_persist()
         self.set_progress(active=True, phase=phase, percent=0, detail=detail)
         suffix = "preview" if profile == "preview" else "final"
         output = self.workspace / f"cutsmith_{suffix}.mp4"
+        # Pidä kopio tilasta – renderöintivirhe ei saa tyhjentää aikajanaa
+        timeline_snapshot = self.timeline.model_copy(deep=True)
 
         def _on_progress(percent: int) -> None:
             self.set_progress(
@@ -1082,5 +1224,11 @@ class EditorController:
             )
             self.set_progress(active=True, phase=phase, percent=100, detail=detail)
             return path
+        except Exception as exc:  # noqa: BLE001 – säilytä timeline, palauta selkeä virhe
+            self.timeline = timeline_snapshot
+            detail_msg = str(exc).strip() or exc.__class__.__name__
+            raise RuntimeError(
+                f"Preview/export failed (timeline unchanged): {detail_msg}"
+            ) from exc
         finally:
             self.clear_progress()

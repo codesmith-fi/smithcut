@@ -61,8 +61,11 @@ OLLAMA_TOOLS: list[dict[str, Any]] = [
         "function": {
             "name": "split_clip",
             "description": (
-                "Split a clip at a time relative to the clip start. "
-                "clip_index is 1-based."
+                "Split a clip in two. clip_index is 1-based. "
+                "split_at_sec is seconds from that clip's start (not source in_sec). "
+                "Time codes like 2:20 / 2.20 mean MM:SS = 140 s on the timeline: "
+                "find the clip covering T and use split_at_sec = T - timeline_start_sec. "
+                "For 'Jaa video tästä kohdasta' / 'Split here', use the playhead."
             ),
             "parameters": {
                 "type": "object",
@@ -467,3 +470,8 @@ def execute_tool(
         return json.dumps({"error": f"Unknown tool: {name}"}), False
     except Exception as exc:  # noqa: BLE001 – LLM tarvitsee selkeän virheen
         return json.dumps({"error": str(exc)}), False
+    finally:
+        try:
+            editor._flush_persist()
+        except Exception:  # noqa: BLE001 – persist ei saa peittää työkalun tulosta
+            pass
