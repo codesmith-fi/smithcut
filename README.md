@@ -13,6 +13,7 @@ Open source - Free - MIT LICENSE
 - **Precision Range Selection:** Highlight exact ranges directly on the timeline (`Shift + drag`) to target cuts, blur transitions, or crossfades across clip boundaries.
 - **Transitions & Effects:** Seamless boundary crossfades (`xfade` / `acrossfade`) and stepped focus-in/focus-out blur transitions (`gblur`).
 - **Independent Audio Track Control:** Detach or mute the original video audio track, edit video cuts and crossfades freely without audio glitches, and attach a continuous audio track across the entire timeline.
+- **Separate Audio Timeline:** Detach video audio onto its own `audio_clips` lane so picture and sound can be cut, moved, and leveled independently (J-cuts / L-cuts).
 - **Timeline Fade In / Fade Out:** Apply whole-timeline fades from/to black on both video and audio (e.g. *"Tee videon alkuun 5 sekunnin fade in ja videon loppuun sama 5 sekunnin fade out"*).
 
 ---
@@ -57,8 +58,8 @@ ollama pull qwen3:8b
 
 1. **Clone the repository and enter the directory:**
    ```bash
-   git clone https://github.com/<your-username>/cutsmith.git
-   cd cutsmith
+   git clone https://github.com/codesmith-fi/smithcut.git
+   cd smithcut
    ```
 
 2. **Create and activate a virtual environment:**
@@ -116,7 +117,9 @@ Open **[http://localhost:8000](http://localhost:8000)** in your browser.
    - Highlight a scene and type: *"Add a smooth blur transition to the start and end of the selected range"*.
 5. **Manage Audio Independently:**
    - *"Remove audio track from the video"* → edit video clips and crossfades → *"Attach audio track 1 to the video"*.
-6. **Timeline Fade In / Out:**
+6. **Separate Audio Timeline:**
+   - *"Erota videosta ääni omalle raidalleen"* → cut/move audio alone (*"Siirrä ääniklippi 2 alkamaan kohdasta 0:08"*, *"Laske ääniraidan voimakkuus puoleen"*).
+7. **Timeline Fade In / Out:**
    - *"Tee videon alkuun 5 sekunnin fade in ja videon loppuun sama 5 sekunnin fade out"* or *"Lisää 3 sekunnin loppuhäivytys"*.
 
 ---

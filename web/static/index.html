@@ -130,6 +130,14 @@
             <p class="strip-empty" id="strip-empty" data-i18n="stripEmpty">Klipit ilmestyvät tähän tuonnin jälkeen</p>
           </div>
         </div>
+
+        <div class="audio-timeline" id="audio-timeline" hidden>
+          <div class="audio-timeline-header">
+            <h3 data-i18n="audioTimelineTitle">Ääniraita</h3>
+            <p class="audio-timeline-meta" id="audio-timeline-meta"></p>
+          </div>
+          <div class="audio-timeline-track" id="audio-timeline-track" aria-live="polite"></div>
+        </div>
       </section>
     </main>
 
@@ -139,6 +147,7 @@
         <button type="button" class="chip" data-quick="text" data-i18n="quickText">Lisää teksti</button>
         <button type="button" class="chip" data-quick="fade" data-i18n="quickFade">Häivytys siirtymäksi</button>
         <button type="button" class="chip" data-quick="split" data-i18n="quickSplit">Jaa klippi</button>
+        <button type="button" class="chip" data-quick="detach-audio" data-i18n="quickDetachAudio">Erota ääni aikajanalle</button>
       </div>
       <form class="command-form" id="command-form">
         <label class="sr-only" for="command-input" data-i18n="commandLabel">Komento</label>

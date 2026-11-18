@@ -59,6 +59,9 @@ const els = {
   audioStatus: document.getElementById("audio-status"),
   audioTrackList: document.getElementById("audio-track-list"),
   clipStrip: document.getElementById("clip-strip"),
+  audioTimeline: document.getElementById("audio-timeline"),
+  audioTimelineMeta: document.getElementById("audio-timeline-meta"),
+  audioTimelineTrack: document.getElementById("audio-timeline-track"),
   timelineDuration: document.getElementById("timeline-duration"),
   commandForm: document.getElementById("command-form"),
   commandInput: document.getElementById("command-input"),
@@ -534,6 +537,7 @@ function applyState(summary) {
   }
   renderAudioTracks(summary);
   renderClipStrip();
+  renderAudioTimeline(summary);
   renderScrubber();
   if (!state._skipPreviewUpdate) {
     updatePreview(resolvePreviewUrl(summary));
@@ -656,6 +660,35 @@ function renderAudioTracks(summary) {
       <span class="track-meta">${t(originKey)} · ${t(stateKey)} · ${formatSeconds(track.duration_sec)}</span>
     `;
     els.audioTrackList.appendChild(li);
+  });
+}
+
+function renderAudioTimeline(summary) {
+  if (!els.audioTimeline || !els.audioTimelineTrack) return;
+  const clips = summary?.audio_clips || [];
+  const total = Math.max(Number(summary?.total_duration_sec) || 0, 0.001);
+  if (!clips.length) {
+    els.audioTimeline.hidden = true;
+    els.audioTimelineTrack.innerHTML = "";
+    return;
+  }
+  els.audioTimeline.hidden = false;
+  if (els.audioTimelineMeta) {
+    els.audioTimelineMeta.textContent = t("audioTimelineMeta", { count: clips.length });
+  }
+  els.audioTimelineTrack.innerHTML = "";
+  clips.forEach((clip) => {
+    const start = Math.max(0, Number(clip.timeline_start_sec) || 0);
+    const dur = Math.max(0.05, Number(clip.duration_sec) || 0.05);
+    const left = (start / total) * 100;
+    const width = Math.min(100 - left, (dur / total) * 100);
+    const block = document.createElement("div");
+    block.className = "audio-clip-block";
+    block.style.left = `${left}%`;
+    block.style.width = `${Math.max(width, 1.5)}%`;
+    block.title = `${clip.label || t("audioClipLabel", { n: clip.index })} · ${formatSeconds(dur)}`;
+    block.textContent = clip.label || t("audioClipLabel", { n: clip.index });
+    els.audioTimelineTrack.appendChild(block);
   });
 }
 
@@ -1058,6 +1091,17 @@ async function handleQuick(action) {
           clip_index: clip.index,
           split_at_sec: Math.max(0.1, clip.duration_sec / 2),
         }),
+      })
+    );
+    return;
+  }
+
+  if (action === "detach-audio") {
+    await mutate(() =>
+      api("/api/audio", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "detach" }),
       })
     );
   }

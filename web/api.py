@@ -79,6 +79,23 @@ class SelectionRequest(BaseModel):
     end_sec: float | None = None
 
 
+class AudioRequest(BaseModel):
+    action: Literal[
+        "detach",
+        "split",
+        "cut_range",
+        "move",
+        "volume",
+    ]
+    timestamp_sec: Optional[float] = None
+    start_sec: Optional[float] = None
+    end_sec: Optional[float] = None
+    clip_index: Optional[int] = Field(default=None, ge=1)
+    new_start_sec: Optional[float] = None
+    volume: Optional[float] = None
+    ripple: bool = False
+
+
 # ---------------------------------------------------------------------------
 # Apurit
 # ---------------------------------------------------------------------------
@@ -361,6 +378,39 @@ def create_app(
                     raise ValueError("move requires from_index and to_index")
                 editor.move_clip(
                     _one_to_zero(body.from_index), _one_to_zero(body.to_index)
+                )
+            return {"ok": True, "state": _state_payload(editor, lang=code)}
+        except (ValueError, KeyError, IndexError) as exc:
+            return _error(exc)
+        except Exception as exc:  # noqa: BLE001
+            return _error(exc, status=500)
+
+    @app.post("/api/audio", response_model=None)
+    def api_audio(body: AudioRequest, lang: str = Query(default="fi")):
+        editor = get_editor()
+        code = _lang_from_request(lang)
+        try:
+            if body.action == "detach":
+                editor.detach_audio_to_timeline()
+            elif body.action == "split":
+                if body.timestamp_sec is None:
+                    raise ValueError("split requires timestamp_sec")
+                editor.split_audio_clip(body.timestamp_sec)
+            elif body.action == "cut_range":
+                if body.start_sec is None or body.end_sec is None:
+                    raise ValueError("cut_range requires start_sec and end_sec")
+                editor.cut_audio_range(
+                    body.start_sec, body.end_sec, ripple=body.ripple
+                )
+            elif body.action == "move":
+                if body.clip_index is None or body.new_start_sec is None:
+                    raise ValueError("move requires clip_index and new_start_sec")
+                editor.move_audio_clip(body.clip_index, body.new_start_sec)
+            elif body.action == "volume":
+                if body.volume is None:
+                    raise ValueError("volume requires volume")
+                editor.set_audio_clip_volume(
+                    clip_index=body.clip_index, volume=body.volume
                 )
             return {"ok": True, "state": _state_payload(editor, lang=code)}
         except (ValueError, KeyError, IndexError) as exc:

@@ -128,6 +128,29 @@ class AudioTrack(BaseModel):
     source_video_id: Optional[str] = None
 
 
+class AudioClip(BaseModel):
+    """Ääniraidan klippi – ajoitus erillään videoklipeistä (J/L-cut)."""
+
+    id: str
+    source_path: str
+    in_point: float = Field(ge=0)
+    out_point: float = Field(gt=0)
+    timeline_start: float = Field(default=0.0, ge=0.0)
+    volume: float = Field(default=1.0, ge=0.0, le=4.0)
+    fade_in_sec: float = Field(default=0.0, ge=0.0)
+    fade_out_sec: float = Field(default=0.0, ge=0.0)
+
+    @model_validator(mode="after")
+    def validate_range(self) -> AudioClip:
+        if self.out_point <= self.in_point:
+            raise ValueError("out_point must be greater than in_point")
+        return self
+
+    @property
+    def duration(self) -> float:
+        return self.out_point - self.in_point
+
+
 class Timeline(BaseModel):
     sources: dict[str, VideoSource] = Field(default_factory=dict)
     clips: list[Clip] = Field(default_factory=list)
@@ -140,6 +163,8 @@ class Timeline(BaseModel):
     # Aktiivinen pool-ääniraita (id) – soi katkeamattomana koko aikajanan yli
     active_audio_track_id: Optional[str] = None
     active_audio_start_sec: float = Field(default=0.0, ge=0.0)
+    # Erillinen ääniaikajana (tyhjä → vanha active_audio_track / klippiääni)
+    audio_clips: list[AudioClip] = Field(default_factory=list)
     # Koko aikajanan alku-/loppuhäivytys mustasta/mustaan
     fade_in_sec: float = Field(default=0.0, ge=0.0)
     fade_out_sec: float = Field(default=0.0, ge=0.0)

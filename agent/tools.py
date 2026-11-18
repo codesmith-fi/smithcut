@@ -382,6 +382,112 @@ OLLAMA_TOOLS: list[dict[str, Any]] = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "detach_audio_to_timeline",
+            "description": (
+                "Detach video audio onto a separate audio timeline "
+                "(AudioClip pieces matching current video clip timings) and mute "
+                "video clip audio. Use for 'Erota videosta ääni omalle raidalleen'."
+            ),
+            "parameters": {"type": "object", "properties": {}, "required": []},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "split_audio_clip",
+            "description": (
+                "Split the audio clip that is playing at timestamp_sec into two."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "timestamp_sec": {
+                        "type": "number",
+                        "description": "Timeline time where the audio clip should split.",
+                    },
+                },
+                "required": ["timestamp_sec"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "cut_audio_range",
+            "description": (
+                "Remove a time range from the audio timeline only (does not move "
+                "video unless ripple=true). Use for 'Leikkaa ääniraidasta valittu "
+                "alue pois' / 'Poista ääni kohdasta 0:10–0:15'. If the user refers "
+                "to the painted selection without numbers, omit start_sec/end_sec."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "start_sec": {"type": "number"},
+                    "end_sec": {"type": "number"},
+                    "ripple": {
+                        "type": "boolean",
+                        "description": "If true, close the gap by shifting later audio clips.",
+                    },
+                },
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "move_audio_clip",
+            "description": (
+                "Move a 1-based audio clip to a new timeline_start (J/L-cuts). "
+                "Use for 'Siirrä ääniklippi 2 alkamaan kohdasta 0:08'."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "clip_index": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "description": "1-based audio clip index (A1=1).",
+                    },
+                    "new_start_sec": {
+                        "type": "number",
+                        "description": "New timeline start in seconds.",
+                    },
+                },
+                "required": ["clip_index", "new_start_sec"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "set_audio_clip_volume",
+            "description": (
+                "Set volume for one audio clip (1-based) or all audio clips when "
+                "clip_index is omitted. Use for 'Laske ääniraidan voimakkuus puoleen' "
+                "→ volume=0.5."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "clip_index": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "description": "Optional 1-based audio clip index.",
+                    },
+                    "volume": {
+                        "type": "number",
+                        "description": "Linear gain (1.0 = original, 0.5 = half).",
+                    },
+                },
+                "required": ["volume"],
+            },
+        },
+    },
 ]
 
 
@@ -595,6 +701,48 @@ def execute_tool(
                 fade_in_sec=None if fade_in is None else float(fade_in),
                 fade_out_sec=None if fade_out is None else float(fade_out),
                 fade_audio=True if fade_audio is None else bool(fade_audio),
+            )
+            return _dump(result), changed
+
+        if name == "detach_audio_to_timeline":
+            return _dump(editor.detach_audio_to_timeline()), changed
+
+        if name == "split_audio_clip":
+            left, right = editor.split_audio_clip(float(args["timestamp_sec"]))
+            return _dump({"left": left, "right": right}), changed
+
+        if name == "cut_audio_range":
+            start = args.get("start_sec")
+            end = args.get("end_sec")
+            ripple = bool(args.get("ripple") or False)
+            if start is None and end is None:
+                if not editor.has_selection():
+                    raise ValueError(
+                        "no active selection; paint a range or provide "
+                        "start_sec and end_sec"
+                    )
+                start = float(editor.selection_start_sec)  # type: ignore[arg-type]
+                end = float(editor.selection_end_sec)  # type: ignore[arg-type]
+            elif start is None or end is None:
+                raise ValueError("provide both start_sec and end_sec")
+            else:
+                start = float(start)
+                end = float(end)
+            result = editor.cut_audio_range(start, end, ripple=ripple)
+            return _dump(result), changed
+
+        if name == "move_audio_clip":
+            track = editor.move_audio_clip(
+                clip_index=int(args["clip_index"]),
+                new_start_sec=float(args["new_start_sec"]),
+            )
+            return _dump(track), changed
+
+        if name == "set_audio_clip_volume":
+            idx = args.get("clip_index")
+            result = editor.set_audio_clip_volume(
+                clip_index=None if idx is None else int(idx),
+                volume=float(args.get("volume") if args.get("volume") is not None else 1.0),
             )
             return _dump(result), changed
 

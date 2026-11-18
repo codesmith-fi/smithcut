@@ -324,6 +324,69 @@ def create_mcp_server(
             },
         )
 
+    @server.tool(
+        name="detach_audio_to_timeline",
+        description=(
+            "Detach video audio onto a separate audio timeline. "
+            "Use for 'Erota videosta ääni omalle raidalleen'."
+        ),
+    )
+    def detach_audio_to_timeline() -> str:
+        return _run("detach_audio_to_timeline", {})
+
+    @server.tool(
+        name="split_audio_clip",
+        description="Split the audio clip playing at timestamp_sec into two.",
+    )
+    def split_audio_clip(timestamp_sec: float) -> str:
+        return _run("split_audio_clip", {"timestamp_sec": timestamp_sec})
+
+    @server.tool(
+        name="cut_audio_range",
+        description=(
+            "Cut a range from the audio timeline only. "
+            "Use for 'Leikkaa ääniraidasta valittu alue pois'."
+        ),
+    )
+    def cut_audio_range(
+        start_sec: float | None = None,
+        end_sec: float | None = None,
+        ripple: bool = False,
+    ) -> str:
+        return _run(
+            "cut_audio_range",
+            {"start_sec": start_sec, "end_sec": end_sec, "ripple": ripple},
+        )
+
+    @server.tool(
+        name="move_audio_clip",
+        description=(
+            "Move 1-based audio clip to new_start_sec. "
+            "Use for 'Siirrä ääniklippi 2 alkamaan kohdasta 0:08'."
+        ),
+    )
+    def move_audio_clip(clip_index: int, new_start_sec: float) -> str:
+        return _run(
+            "move_audio_clip",
+            {"clip_index": clip_index, "new_start_sec": new_start_sec},
+        )
+
+    @server.tool(
+        name="set_audio_clip_volume",
+        description=(
+            "Set volume for one or all audio clips. "
+            "Use for 'Laske ääniraidan voimakkuus puoleen' (volume=0.5)."
+        ),
+    )
+    def set_audio_clip_volume(
+        volume: float = 1.0,
+        clip_index: int | None = None,
+    ) -> str:
+        return _run(
+            "set_audio_clip_volume",
+            {"volume": volume, "clip_index": clip_index},
+        )
+
     # Testejä / agenttia varten: säilytä controller-viite
     server._cutsmith_editor = ctrl  # type: ignore[attr-defined]
     return server

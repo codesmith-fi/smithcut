@@ -72,6 +72,10 @@ const dictionaries = {
     quickText: "Lisää teksti",
     quickFade: "Häivytys siirtymäksi",
     quickSplit: "Jaa klippi",
+    quickDetachAudio: "Erota ääni aikajanalle",
+    audioTimelineTitle: "Ääniraita",
+    audioTimelineMeta: "{count} ääniklippiä",
+    audioClipLabel: "A{n}",
     commandLabel: "Komento",
     commandPlaceholder:
       'Kokeile: "Lisää zoom klippiin 1" tai "Lisää teksti Tervetuloa"',
@@ -170,6 +174,10 @@ const dictionaries = {
     quickText: "Add text",
     quickFade: "Fade transition",
     quickSplit: "Split clip",
+    quickDetachAudio: "Detach audio to timeline",
+    audioTimelineTitle: "Audio timeline",
+    audioTimelineMeta: "{count} audio clip(s)",
+    audioClipLabel: "A{n}",
     commandLabel: "Command",
     commandPlaceholder:
       'Try: "Add zoom to clip 1" or "Add text Welcome"',

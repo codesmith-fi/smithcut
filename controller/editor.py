@@ -18,6 +18,7 @@ from compiler.ffmpeg import render as ffmpeg_render
 from compiler.ffprobe import probe, probe_audio
 from model.history import HistoryManager
 from model.timeline import (
+    AudioClip,
     AudioTrack,
     BackgroundMusic,
     BlurEffect,
@@ -57,6 +58,7 @@ _SUMMARY_I18N: dict[str, dict[str, Any]] = {
         "fade_in_out": "Alku­häivytys {fade_in} s, loppuhäivytys {fade_out} s",
         "fade_in_only": "Alku­häivytys {fade_in} s",
         "fade_out_only": "Loppuhäivytys {fade_out} s",
+        "audio_clip": "A{n}",
         "empty": "Aikajana on tyhjä – tuo video aloittaaksesi.",
         "description": (
             "Aikajanalla on {count} klippiä, kokonaiskesto {duration} s, "
@@ -81,6 +83,7 @@ _SUMMARY_I18N: dict[str, dict[str, Any]] = {
         "fade_in_out": "Fade in {fade_in} s, fade out {fade_out} s",
         "fade_in_only": "Fade in {fade_in} s",
         "fade_out_only": "Fade out {fade_out} s",
+        "audio_clip": "A{n}",
         "empty": "Timeline is empty — import a video to get started.",
         "description": (
             "Timeline has {count} clip(s), total duration {duration} s, "
@@ -235,6 +238,9 @@ class EditorController:
         active_id = timeline.active_audio_track_id
         if active_id and not any(t.id == active_id for t in kept_audio):
             active_id = None
+        kept_audio_clips = [
+            c for c in timeline.audio_clips if Path(c.source_path).is_file()
+        ]
 
         self.timeline = Timeline(
             sources=kept_sources,
@@ -245,6 +251,7 @@ class EditorController:
             audio_tracks=kept_audio,
             active_audio_track_id=active_id,
             active_audio_start_sec=timeline.active_audio_start_sec,
+            audio_clips=kept_audio_clips,
             fade_in_sec=timeline.fade_in_sec,
             fade_out_sec=timeline.fade_out_sec,
             fade_audio=timeline.fade_audio,
@@ -772,6 +779,259 @@ class EditorController:
             "fade_audio": self.timeline.fade_audio,
         }
 
+    def _ensure_extracted_audio_for_source(self, source: VideoSource) -> AudioTrack | None:
+        """Irrota lähdevideon ääni pooliin (tai palauta olemassa oleva)."""
+        if not source.has_audio:
+            return None
+        for track in self.timeline.audio_tracks:
+            if track.origin == "extracted" and track.source_video_id == source.id:
+                if Path(track.path).is_file():
+                    return track
+        audio_dir = Path(self.workspace) / "audio"
+        audio_dir.mkdir(parents=True, exist_ok=True)
+        out = audio_dir / f"track_{_new_id('aud')}.m4a"
+        extract_audio_track(Path(source.path), out)
+        meta = probe_audio(str(out))
+        track = AudioTrack(
+            id=_new_id("aud"),
+            path=str(out.resolve()),
+            duration=float(meta["duration"]),
+            origin="extracted",
+            source_video_id=source.id,
+        )
+        self.timeline.audio_tracks.append(track)
+        return track
+
+    def detach_audio_to_timeline(self) -> dict[str, Any]:
+        """Mykistä videoääni ja luo AudioClip-palat nykyisten videoklippien ajoituksilla."""
+        if not self.timeline.clips:
+            raise ValueError("timeline has no clips")
+
+        self._checkpoint()
+        source_audio: dict[str, str] = {}
+        for clip in self.timeline.clips:
+            source = self.timeline.sources.get(clip.source_id)
+            if source is None:
+                continue
+            track = self._ensure_extracted_audio_for_source(source)
+            if track is not None:
+                source_audio[source.id] = track.path
+
+        spans = self.clip_spans()
+        audio_clips: list[AudioClip] = []
+        for i, t_start, _t_end in spans:
+            clip = self.timeline.clips[i]
+            path = source_audio.get(clip.source_id)
+            if not path:
+                continue
+            audio_clips.append(
+                AudioClip(
+                    id=_new_id("aclip"),
+                    source_path=path,
+                    in_point=float(clip.in_sec),
+                    out_point=float(clip.out_sec),
+                    timeline_start=float(t_start),
+                )
+            )
+
+        self.timeline.audio_clips = audio_clips
+        self.timeline.mute_video_audio = True
+        # Erillinen ääniaikajana korvaa continuous bed -tilan
+        self.timeline.active_audio_track_id = None
+        self._flush_persist()
+        return {
+            "mute_video_audio": True,
+            "audio_clip_count": len(audio_clips),
+            "audio_track_count": len(self.timeline.audio_tracks),
+        }
+
+    def _audio_clip(self, zero_index: int) -> AudioClip:
+        if zero_index < 0 or zero_index >= len(self.timeline.audio_clips):
+            raise IndexError(
+                f"audio clip {zero_index + 1} not found "
+                f"(have {len(self.timeline.audio_clips)})"
+            )
+        return self.timeline.audio_clips[zero_index]
+
+    def split_audio_clip(self, timestamp_sec: float) -> tuple[AudioClip, AudioClip]:
+        """Jaa aikajanalla soiva ääniklippi kahdeksi."""
+        t = float(timestamp_sec)
+        if t < 0:
+            raise ValueError("timestamp_sec must be >= 0")
+        hit: int | None = None
+        for i, ac in enumerate(self.timeline.audio_clips):
+            start = ac.timeline_start
+            end = start + ac.duration
+            if start + 1e-9 < t < end - 1e-9:
+                hit = i
+                break
+        if hit is None:
+            raise ValueError(f"no audio clip playing at {t:.3f}s")
+
+        self._checkpoint()
+        ac = self.timeline.audio_clips[hit]
+        local = t - ac.timeline_start
+        left = ac.model_copy(
+            update={
+                "id": _new_id("aclip"),
+                "out_point": ac.in_point + local,
+            }
+        )
+        right = ac.model_copy(
+            update={
+                "id": _new_id("aclip"),
+                "in_point": ac.in_point + local,
+                "timeline_start": t,
+            }
+        )
+        self.timeline.audio_clips[hit : hit + 1] = [left, right]
+        self._flush_persist()
+        return left, right
+
+    def cut_audio_range(
+        self,
+        start_sec: float,
+        end_sec: float,
+        *,
+        ripple: bool = False,
+    ) -> dict[str, Any]:
+        """Leikkaa ääniraidalta [start, end) siirtämättä videota (ellei ripple)."""
+        start = float(start_sec)
+        end = float(end_sec)
+        if end <= start + 1e-9:
+            raise ValueError("end_sec must be greater than start_sec")
+        if not self.timeline.audio_clips:
+            raise ValueError("no audio clips on timeline")
+
+        gap = end - start
+        self._checkpoint()
+        new_clips: list[AudioClip] = []
+        for ac in self.timeline.audio_clips:
+            new_clips.extend(self._cut_one_audio_clip(ac, start, end, ripple, gap))
+        self.timeline.audio_clips = new_clips
+        self._flush_persist()
+        return {
+            "start_sec": start,
+            "end_sec": end,
+            "ripple": ripple,
+            "audio_clip_count": len(new_clips),
+        }
+
+    def _cut_one_audio_clip(
+        self,
+        ac: AudioClip,
+        start: float,
+        end: float,
+        ripple: bool,
+        gap: float,
+    ) -> list[AudioClip]:
+        a = ac.timeline_start
+        b = a + ac.duration
+        if b <= start + 1e-9 or a >= end - 1e-9:
+            if ripple and a >= end - 1e-9:
+                return [
+                    ac.model_copy(
+                        update={"timeline_start": max(0.0, a - gap)}
+                    )
+                ]
+            return [ac]
+        if a >= start - 1e-9 and b <= end + 1e-9:
+            return []
+        if a < start and b > end:
+            left_len = start - a
+            right_skip = end - a
+            out: list[AudioClip] = []
+            if left_len > 1e-6:
+                out.append(
+                    ac.model_copy(
+                        update={
+                            "id": _new_id("aclip"),
+                            "out_point": ac.in_point + left_len,
+                        }
+                    )
+                )
+            rem = ac.duration - right_skip
+            if rem > 1e-6:
+                out.append(
+                    ac.model_copy(
+                        update={
+                            "id": _new_id("aclip"),
+                            "in_point": ac.in_point + right_skip,
+                            "timeline_start": start if ripple else end,
+                        }
+                    )
+                )
+            return out
+        if a < start < b:
+            keep = start - a
+            if keep <= 1e-6:
+                return []
+            return [
+                ac.model_copy(update={"out_point": ac.in_point + keep})
+            ]
+        # Alkaa leikkauksen sisällä, jatkuu past end
+        skip = max(0.0, end - a)
+        rem = ac.duration - skip
+        if rem <= 1e-6:
+            return []
+        return [
+            ac.model_copy(
+                update={
+                    "in_point": ac.in_point + skip,
+                    "timeline_start": start if ripple else end,
+                }
+            )
+        ]
+
+    def move_audio_clip(self, clip_index: int, new_start_sec: float) -> AudioClip:
+        """Siirrä 1-pohjainen ääniklippi uuteen timeline_start-kohtaan."""
+        if clip_index < 1:
+            raise ValueError(
+                f"clip_index must be 1-based (first audio clip is 1), got {clip_index}"
+            )
+        if new_start_sec < 0:
+            raise ValueError("new_start_sec must be >= 0")
+        zero = clip_index - 1
+        self._audio_clip(zero)  # validate
+        self._checkpoint()
+        ac = self.timeline.audio_clips[zero]
+        updated = ac.model_copy(update={"timeline_start": float(new_start_sec)})
+        self.timeline.audio_clips[zero] = updated
+        self._flush_persist()
+        return updated
+
+    def set_audio_clip_volume(
+        self,
+        clip_index: int | None = None,
+        volume: float = 1.0,
+    ) -> dict[str, Any]:
+        """Säädä yhden tai kaikkien ääniklipien voimakkuutta."""
+        if volume < 0:
+            raise ValueError("volume must be >= 0")
+        if not self.timeline.audio_clips:
+            raise ValueError("no audio clips on timeline")
+        if clip_index is not None and clip_index < 1:
+            raise ValueError(
+                f"clip_index must be 1-based (first audio clip is 1), got {clip_index}"
+            )
+
+        self._checkpoint()
+        if clip_index is None:
+            self.timeline.audio_clips = [
+                c.model_copy(update={"volume": float(volume)})
+                for c in self.timeline.audio_clips
+            ]
+            updated = len(self.timeline.audio_clips)
+        else:
+            zero = clip_index - 1
+            ac = self._audio_clip(zero)
+            self.timeline.audio_clips[zero] = ac.model_copy(
+                update={"volume": float(volume)}
+            )
+            updated = 1
+        self._flush_persist()
+        return {"volume": float(volume), "updated_count": updated}
+
     def undo(self) -> bool:
         previous = self.history.undo(self.timeline)
         if previous is None:
@@ -908,6 +1168,26 @@ class EditorController:
                 }
             )
 
+        audio_clips_summary = []
+        for i, ac in enumerate(self.timeline.audio_clips):
+            t_end = ac.timeline_start + ac.duration
+            audio_clips_summary.append(
+                {
+                    "index": i + 1,
+                    "id": ac.id,
+                    "label": L["audio_clip"].format(n=i + 1),
+                    "source_path": ac.source_path,
+                    "in_point": round(ac.in_point, 3),
+                    "out_point": round(ac.out_point, 3),
+                    "timeline_start_sec": round(ac.timeline_start, 3),
+                    "timeline_end_sec": round(t_end, 3),
+                    "duration_sec": round(ac.duration, 3),
+                    "volume": ac.volume,
+                    "fade_in_sec": ac.fade_in_sec,
+                    "fade_out_sec": ac.fade_out_sec,
+                }
+            )
+
         total = round(self.timeline.total_duration(), 3)
         n_clips = len(self.timeline.clips)
         if n_clips == 0:
@@ -951,6 +1231,8 @@ class EditorController:
                 None,
             ),
             "active_audio_start_sec": self.timeline.active_audio_start_sec,
+            "audio_clips": audio_clips_summary,
+            "audio_clip_count": len(audio_clips_summary),
             "fade_in_sec": round(self.timeline.fade_in_sec, 3),
             "fade_out_sec": round(self.timeline.fade_out_sec, 3),
             "fade_audio": self.timeline.fade_audio,

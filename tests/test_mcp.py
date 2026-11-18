@@ -66,6 +66,11 @@ def test_mcp_lists_expected_tools(editor: EditorController):
         "remove_video_audio",
         "attach_audio_track",
         "set_timeline_fades",
+        "detach_audio_to_timeline",
+        "split_audio_clip",
+        "cut_audio_range",
+        "move_audio_clip",
+        "set_audio_clip_volume",
     } <= names
     by_name = {t.name: t for t in tools}
     assert "1-based" in (by_name["add_text"].description or "")

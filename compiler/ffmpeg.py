@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Literal
 
 from model.timeline import (
+    AudioClip,
     BlurEffect,
     Clip,
     TextEffect,
@@ -461,14 +462,43 @@ def _clip_audio_filter(
 
 
 def _extra_audio_inputs(timeline: Timeline) -> list[str]:
-    """Lisä-inputit filter/command -rakenteelle (aktiivinen raita, BGM)."""
+    """Lisä-inputit filter/command -rakenteelle (audio_clips / aktiivinen raita, BGM)."""
     extras: list[str] = []
-    active = timeline.active_audio_track()
-    if active is not None:
-        extras.append(active.path)
+    if timeline.audio_clips:
+        extras.extend(c.source_path for c in timeline.audio_clips)
+    else:
+        active = timeline.active_audio_track()
+        if active is not None:
+            extras.append(active.path)
     if timeline.bgm is not None:
         extras.append(timeline.bgm.path)
     return extras
+
+
+def _audio_clip_filter(
+    clip: AudioClip,
+    input_index: int,
+    out_label: str,
+) -> str:
+    """Yksi AudioClip: atrim → volume/afade → adelay timeline_startiin."""
+    dur = max(clip.duration, 0.05)
+    parts = [
+        f"[{input_index}:a]atrim=start={clip.in_point:.6f}:end={clip.out_point:.6f}",
+        "asetpts=PTS-STARTPTS",
+        "aformat=sample_fmts=fltp:channel_layouts=stereo:sample_rates=48000",
+        "aresample=48000",
+        f"volume={float(clip.volume):.6f}",
+    ]
+    fade_in = min(float(clip.fade_in_sec), dur) if clip.fade_in_sec > 0 else 0.0
+    fade_out = min(float(clip.fade_out_sec), dur) if clip.fade_out_sec > 0 else 0.0
+    if fade_in > 0:
+        parts.append(f"afade=t=in:st=0:d={fade_in:.6f}")
+    if fade_out > 0:
+        st = max(0.0, dur - fade_out)
+        parts.append(f"afade=t=out:st={st:.6f}:d={fade_out:.6f}")
+    delay_ms = max(0, int(round(float(clip.timeline_start) * 1000.0)))
+    parts.append(f"adelay={delay_ms}|{delay_ms}")
+    return ",".join(parts) + f"[{out_label}]"
 
 
 def build_filter_complex(timeline: Timeline, mode: RenderMode | str = "preview") -> str:
@@ -481,10 +511,15 @@ def build_filter_complex(timeline: Timeline, mode: RenderMode | str = "preview")
     clip_paths = _clip_input_paths(timeline)
     n_clip_inputs = len(clip_paths)
 
+    use_audio_clips = bool(timeline.audio_clips)
     active_track = timeline.active_audio_track()
-    # Katkeamaton pool-ääniraita korvaa klippiäänen; mute ohittaa klippiäänen
-    use_continuous = active_track is not None
-    use_clip_audio = (not timeline.mute_video_audio) and (not use_continuous)
+    # audio_clips voittaa; muuten katkeamaton pool-raita / klippiääni
+    use_continuous = (not use_audio_clips) and active_track is not None
+    use_clip_audio = (
+        (not use_audio_clips)
+        and (not timeline.mute_video_audio)
+        and (not use_continuous)
+    )
 
     lines: list[str] = []
     video_labels: list[str] = []
@@ -571,13 +606,35 @@ def build_filter_complex(timeline: Timeline, mode: RenderMode | str = "preview")
         lines.append(f"[{current_v}]null[vout]")
 
     next_extra = n_clip_inputs
+    bed_dur = max(total, 0.05)
 
-    if use_continuous:
+    if use_audio_clips:
+        ac_labels: list[str] = []
+        for i, aclip in enumerate(timeline.audio_clips):
+            inp = next_extra + i
+            label = f"ac{i}"
+            lines.append(_audio_clip_filter(aclip, inp, label))
+            ac_labels.append(label)
+        next_extra += len(timeline.audio_clips)
+        if len(ac_labels) == 1:
+            lines.append(f"[{ac_labels[0]}]anull[a_clips]")
+        else:
+            mixed = "".join(f"[{lab}]" for lab in ac_labels)
+            lines.append(
+                f"{mixed}amix=inputs={len(ac_labels)}:duration=longest:normalize=0"
+                f"[a_clips]"
+            )
+        lines.append(
+            f"[a_clips]atrim=0:{bed_dur:.6f},asetpts=PTS-STARTPTS,"
+            f"apad=whole_dur={bed_dur:.6f},atrim=0:{bed_dur:.6f},"
+            f"asetpts=PTS-STARTPTS[a_bed]"
+        )
+        bed_label = "a_bed"
+    elif use_continuous:
         assert active_track is not None
         track_index = next_extra
         next_extra += 1
         start = max(0.0, float(timeline.active_audio_start_sec))
-        bed_dur = max(total, 0.05)
         end = start + bed_dur
         # Katkeamaton bed: aresample + atrim täsmälleen videon kestoon (apad jos lyhyempi)
         lines.append(
@@ -592,7 +649,7 @@ def build_filter_complex(timeline: Timeline, mode: RenderMode | str = "preview")
         bed_label = current_a or "a0"
     else:
         # Mykistetty eikä pool-raidasta → hiljaisuus (selaintoistin tarvitsee äänen)
-        lines.append(_silence_audio_filter(total if total > 0 else 0.05, "a_bed"))
+        lines.append(_silence_audio_filter(bed_dur, "a_bed"))
         bed_label = "a_bed"
 
     if timeline.bgm is not None:
@@ -618,8 +675,13 @@ def build_filter_complex(timeline: Timeline, mode: RenderMode | str = "preview")
     else:
         lines.append(f"[{bed_label}]anull[a_pre]")
 
-    # Aikajanan afade (klippiääni tai liitetty AudioTrack / BGM-mix)
-    has_real_audio = use_clip_audio or use_continuous or timeline.bgm is not None
+    # Aikajanan afade (audio_clips / klippiääni / AudioTrack / BGM-mix)
+    has_real_audio = (
+        use_audio_clips
+        or use_clip_audio
+        or use_continuous
+        or timeline.bgm is not None
+    )
     a_fade_parts: list[str] = []
     if timeline.fade_audio and has_real_audio:
         if fade_in > 0:
