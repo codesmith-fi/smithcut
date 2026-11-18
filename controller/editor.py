@@ -214,6 +214,22 @@ class EditorController:
         self.timeline.clips.pop(clip_index)
         self._adjust_transitions_after_remove(clip_index)
 
+    def move_clip(self, from_index: int, to_index: int) -> None:
+        """Siirrä klippi uuteen indeksiin (0-pohjainen)."""
+        n = len(self.timeline.clips)
+        if from_index < 0 or from_index >= n:
+            raise IndexError(f"from_index {from_index} out of range")
+        if to_index < 0 or to_index >= n:
+            raise IndexError(f"to_index {to_index} out of range")
+        if from_index == to_index:
+            return
+
+        self._checkpoint()
+        clip = self.timeline.clips.pop(from_index)
+        self.timeline.clips.insert(to_index, clip)
+        # Indeksipohjaiset siirtymät eivät säily järjestyksen vaihdossa luotettavasti.
+        self.timeline.transitions = []
+
     def set_transition(
         self,
         after_clip_index: int,

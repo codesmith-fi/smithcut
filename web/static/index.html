@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html lang="fi">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>CutSmith</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700&family=Syne:wght@600;700;800&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+  <div class="app">
+    <header class="topbar">
+      <div class="brand">
+        <span class="brand-mark" aria-hidden="true"></span>
+        <h1 class="brand-name">CutSmith</h1>
+      </div>
+      <p class="status" id="status" role="status">Valmis</p>
+      <div class="topbar-actions">
+        <button type="button" class="btn ghost" id="btn-undo" disabled title="Kumoa">Kumoa</button>
+        <button type="button" class="btn ghost" id="btn-redo" disabled title="Tee uudelleen">Tee uudelleen</button>
+        <button type="button" class="btn primary" id="btn-export">Vie valmis video</button>
+      </div>
+    </header>
+
+    <main class="workspace">
+      <section class="preview-panel" aria-label="Esikatselu">
+        <div class="preview-stage" id="preview-stage">
+          <video id="preview" controls playsinline preload="metadata"></video>
+          <div class="preview-empty" id="preview-empty">
+            <p>Tuo video aloittaaksesi</p>
+            <span>Raahaa tiedosto alle tai käytä + Tuo -painiketta</span>
+          </div>
+          <div class="zoom-toast" id="zoom-toast" hidden>
+            Klikkaa kuvaa lisätäksesi zoomauksen tähän kohtaan
+          </div>
+        </div>
+        <div class="preview-hint">
+          <span>Vinkki:</span> klikkaa esikatselua zoomataksesi valittuun kohtaan.
+        </div>
+      </section>
+
+      <section class="library-panel" aria-label="Mediapankki ja klippinauha">
+        <div
+          class="dropzone"
+          id="dropzone"
+          tabindex="0"
+          role="button"
+          aria-label="Raahaa videoita tai musiikkia tähän"
+        >
+          <div class="dropzone-inner">
+            <strong>Raahaa videoita tai taustamusiikkia tähän</strong>
+            <span>tai</span>
+            <label class="btn soft file-btn">
+              Tuo tiedosto
+              <input type="file" id="file-input" accept="video/*,audio/*" hidden />
+            </label>
+          </div>
+          <p class="dropzone-meta" id="library-meta">Ei vielä materiaalia</p>
+        </div>
+
+        <div class="timeline-header">
+          <h2>Klippinauha</h2>
+          <p id="timeline-duration">Kesto: 0 s</p>
+        </div>
+        <div class="clip-strip-wrap">
+          <div class="clip-strip" id="clip-strip" aria-live="polite">
+            <p class="strip-empty" id="strip-empty">Klipit ilmestyvät tähän tuonnin jälkeen</p>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <footer class="command-bar">
+      <div class="quick-actions" id="quick-actions">
+        <button type="button" class="chip" data-quick="zoom-center">Lisää zoom</button>
+        <button type="button" class="chip" data-quick="text">Lisää teksti</button>
+        <button type="button" class="chip" data-quick="fade">Häivytys siirtymäksi</button>
+        <button type="button" class="chip" data-quick="split">Jaa klippi</button>
+      </div>
+      <form class="command-form" id="command-form">
+        <label class="sr-only" for="command-input">Komento</label>
+        <input
+          id="command-input"
+          type="text"
+          autocomplete="off"
+          placeholder='Kokeile: "Lisää zoom klippiin 1" tai "Lisää teksti Tervetuloa"'
+        />
+        <button type="submit" class="btn primary">Lähetä</button>
+      </form>
+      <p class="command-reply" id="command-reply" hidden></p>
+    </footer>
+  </div>
+
+  <dialog class="modal" id="text-modal">
+    <form method="dialog" id="text-form" class="modal-card">
+      <h3>Lisää teksti</h3>
+      <label>
+        Teksti
+        <input type="text" id="text-value" required maxlength="120" placeholder="Esim. Tervetuloa" />
+      </label>
+      <label>
+        Sijainti
+        <select id="text-position">
+          <option value="bottom">Alareuna</option>
+          <option value="center">Keskellä</option>
+          <option value="top">Yläreuna</option>
+        </select>
+      </label>
+      <div class="modal-actions">
+        <button type="button" class="btn ghost" id="text-cancel">Peruuta</button>
+        <button type="submit" class="btn primary">Lisää</button>
+      </div>
+    </form>
+  </dialog>
+
+  <script src="/app.js" type="module"></script>
+</body>
+</html>
