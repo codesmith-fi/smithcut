@@ -74,6 +74,11 @@ class PlayheadRequest(BaseModel):
     sec: float = Field(ge=0)
 
 
+class SelectionRequest(BaseModel):
+    start_sec: float | None = None
+    end_sec: float | None = None
+
+
 # ---------------------------------------------------------------------------
 # Apurit
 # ---------------------------------------------------------------------------
@@ -172,6 +177,23 @@ def create_app(
             return {
                 "ok": True,
                 "playhead_sec": sec,
+                "state": _state_payload(editor, lang=code),
+            }
+        except (ValueError, IndexError) as exc:
+            return _error(exc)
+        except Exception as exc:  # noqa: BLE001
+            return _error(exc, status=500)
+
+    @app.post("/api/timeline/selection", response_model=None)
+    def api_set_selection(body: SelectionRequest, lang: str = Query(default="fi")):
+        editor = get_editor()
+        code = _lang_from_request(lang)
+        try:
+            start, end = editor.set_selection(body.start_sec, body.end_sec)
+            return {
+                "ok": True,
+                "selection_start_sec": start,
+                "selection_end_sec": end,
                 "state": _state_payload(editor, lang=code),
             }
         except (ValueError, IndexError) as exc:

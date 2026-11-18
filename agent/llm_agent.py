@@ -89,6 +89,7 @@ def _system_prompt(lang: str, state_summary: dict[str, Any]) -> str:
 
     playhead = state_summary.get("playhead_sec", 0.0)
     playhead_tc = state_summary.get("playhead_timecode", "00:00.0")
+    selection_line = _selection_context_line(state_summary, lang=lang)
     return (
         "/no_think\n"
         "You are CutSmith, a friendly local video-editing assistant.\n"
@@ -101,11 +102,43 @@ def _system_prompt(lang: str, state_summary: dict[str, Any]) -> str:
         "'Leikkaa timeline markkerin valitusta kohdasta 10 sekuntia pois'), "
         "call cut_timeline_range with duration_sec and omit start_sec so it "
         "uses the playhead.\n"
+        f"{selection_line}"
+        "When the user refers to the painted/selected range "
+        "('valittu alue', 'maalattu kohta', 'selected range') without numbers, "
+        "call cut_timeline_range with no start_sec and no duration_sec so the "
+        "active selection is used.\n"
         "Batch all needed tool calls first; do not ask the user to preview — "
         "the app renders preview once after you finish.\n"
         "After tools finish, give a short plain-language confirmation of what changed.\n"
         "Current timeline summary (JSON):\n"
         f"{json.dumps(state_summary, ensure_ascii=False)}"
+    )
+
+
+def _selection_context_line(state_summary: dict[str, Any], *, lang: str = "fi") -> str:
+    """Muotoile valintaväli system-prompttiin (tyhjä jos ei valintaa)."""
+    start = state_summary.get("selection_start_sec")
+    end = state_summary.get("selection_end_sec")
+    if start is None or end is None:
+        return ""
+    duration = state_summary.get("selection_duration_sec")
+    if duration is None:
+        duration = float(end) - float(start)
+    tc = state_summary.get("selection_timecode")
+    if not tc:
+        from controller.editor import format_timecode
+
+        tc = f"{format_timecode(float(start))} – {format_timecode(float(end))}"
+    if lang == "en":
+        return (
+            f"Selected range: {tc} (duration {duration}s). "
+            "Prefer this range when the user says 'selected range' / "
+            "'painted area' without explicit times.\n"
+        )
+    return (
+        f"Selected range: {tc} (duration {duration}s). "
+        "Käytä tätä väliä kun käyttäjä sanoo 'valittu alue' / "
+        "'maalattu kohta' ilman erillisiä lukuja.\n"
     )
 
 

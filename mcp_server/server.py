@@ -217,17 +217,20 @@ def create_mcp_server(
     @server.tool(
         name="cut_timeline_range",
         description=(
-            "Remove a time range from the timeline. duration_sec is required. "
-            "If start_sec is omitted, cut starts at the current playhead marker. "
-            "Use for 'cut N seconds from the playhead' / "
-            "'Leikkaa timeline markkerin valitusta kohdasta N sekuntia pois'."
+            "Remove a time range from the timeline. "
+            "Omit both start_sec and duration_sec to cut the painted/selected "
+            "range ('valittu alue' / 'selected range'). "
+            "If only duration_sec is given, cut starts at the playhead. "
+            "Explicit start_sec + duration_sec always win."
         ),
     )
     def cut_timeline_range(
-        duration_sec: float,
+        duration_sec: float | None = None,
         start_sec: float | None = None,
     ) -> str:
-        args: dict[str, Any] = {"duration_sec": duration_sec}
+        args: dict[str, Any] = {}
+        if duration_sec is not None:
+            args["duration_sec"] = duration_sec
         if start_sec is not None:
             args["start_sec"] = start_sec
         return _run("cut_timeline_range", args)

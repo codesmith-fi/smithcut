@@ -210,27 +210,33 @@ OLLAMA_TOOLS: list[dict[str, Any]] = [
         "function": {
             "name": "cut_timeline_range",
             "description": (
-                "Remove a time range from the timeline. If start_sec is omitted, "
-                "cut starts at the current playhead marker. Use this for requests "
-                "like 'cut 10 seconds from the playhead' or "
-                "'Leikkaa timeline markkerin valitusta kohdasta 10 sekuntia pois'."
+                "Remove a time range from the timeline. "
+                "If the user refers to the painted/selected range "
+                "('valittu alue', 'maalattu kohta', 'selected range') without "
+                "numbers, omit start_sec and duration_sec so the active "
+                "selection is used. If only duration_sec is given, cut starts "
+                "at the playhead. Explicit start_sec + duration_sec always win."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "duration_sec": {
                         "type": "number",
-                        "description": "How many seconds to remove.",
+                        "description": (
+                            "How many seconds to remove. Omit together with "
+                            "start_sec to cut the active selection."
+                        ),
                     },
                     "start_sec": {
                         "type": "number",
                         "description": (
                             "Optional timeline start (seconds). "
-                            "Defaults to current playhead_sec when omitted."
+                            "Omit with duration_sec to use the selection; "
+                            "omit alone to start at playhead_sec."
                         ),
                     },
                 },
-                "required": ["duration_sec"],
+                "required": [],
             },
         },
     },
@@ -358,20 +364,40 @@ def execute_tool(
             return json.dumps({"ok": ok}), ok
 
         if name == "cut_timeline_range":
-            duration = float(args["duration_sec"])
             start = args.get("start_sec")
-            if start is None:
-                used_start = editor.playhead_sec
-                editor.cut_at_playhead(duration)
+            duration_arg = args.get("duration_sec")
+            used_selection = False
+
+            if start is None and duration_arg is None:
+                if not editor.has_selection():
+                    raise ValueError(
+                        "no active selection; paint a range on the timeline "
+                        "or provide start_sec and duration_sec"
+                    )
+                used_start = float(editor.selection_start_sec)  # type: ignore[arg-type]
+                duration = float(editor.selection_end_sec) - used_start  # type: ignore[arg-type]
+                editor.cut_selected_range()
+                used_selection = True
+            elif duration_arg is None:
+                raise ValueError("duration_sec is required when start_sec is set")
             else:
-                used_start = float(start)
-                editor.cut_out_range(used_start, duration)
+                duration = float(duration_arg)
+                if start is None:
+                    used_start = editor.playhead_sec
+                    editor.cut_at_playhead(duration)
+                else:
+                    used_start = float(start)
+                    editor.cut_out_range(used_start, duration)
+
             return json.dumps(
                 {
                     "ok": True,
                     "start_sec": used_start,
                     "duration_sec": duration,
+                    "used_selection": used_selection,
                     "playhead_sec": editor.playhead_sec,
+                    "selection_start_sec": editor.selection_start_sec,
+                    "selection_end_sec": editor.selection_end_sec,
                 }
             ), changed
 

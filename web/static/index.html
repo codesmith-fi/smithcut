@@ -52,7 +52,19 @@
         <div class="scrubber" id="scrubber" hidden>
           <div class="scrubber-meta">
             <span class="scrubber-label" data-i18n="scrubberLabel">Aikajana</span>
-            <span class="scrubber-timecode" id="scrubber-timecode">00:00.0</span>
+            <div class="scrubber-meta-right">
+              <span class="scrubber-selection" id="scrubber-selection" hidden></span>
+              <button
+                type="button"
+                class="scrubber-clear"
+                id="scrubber-clear"
+                hidden
+                data-i18n="clearSelection"
+                data-i18n-title="clearSelection"
+                title="Tyhjennä valinta"
+              >×</button>
+              <span class="scrubber-timecode" id="scrubber-timecode">00:00.0</span>
+            </div>
           </div>
           <div
             class="scrubber-track"
@@ -67,8 +79,13 @@
           >
             <div class="scrubber-blocks" id="scrubber-blocks"></div>
             <div class="scrubber-ticks" id="scrubber-ticks"></div>
+            <div class="scrubber-selection-range" id="scrubber-selection-range" hidden>
+              <button type="button" class="scrubber-handle scrubber-handle-start" id="scrubber-handle-start" aria-label="Valinnan alku"></button>
+              <button type="button" class="scrubber-handle scrubber-handle-end" id="scrubber-handle-end" aria-label="Valinnan loppu"></button>
+            </div>
             <div class="scrubber-playhead" id="scrubber-playhead"></div>
           </div>
+          <p class="scrubber-hint" data-i18n="scrubberHint">Shift+raahaus maalaa alueen AI-muokkauksia varten</p>
         </div>
         <div class="preview-hint">
           <span data-i18n="previewHintLabel">Vinkki:</span>

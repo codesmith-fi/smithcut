@@ -119,12 +119,17 @@ class EditorController:
         self.timeline = timeline or Timeline()
         self.history = HistoryManager()
         self.playhead_sec: float = 0.0
+        self.selection_start_sec: float | None = None
+        self.selection_end_sec: float | None = None
         self._progress: dict[str, Any] = {
             "active": False,
             "phase": "idle",
             "percent": None,
             "detail": "",
         }
+
+    # Valinnan minimikesto (sekunteina); lyhyemmät nollataan
+    SELECTION_MIN_SEC = 0.05
 
     # ------------------------------------------------------------------
     # Sisäiset apurit
@@ -566,8 +571,15 @@ class EditorController:
                 transitions=len(self.timeline.transitions),
             )
 
-        # Pidä playhead synkassa kokonaiskestoon
+        # Pidä playhead / valinta synkassa kokonaiskestoon
         self.playhead_sec = min(self.playhead_sec, total) if total > 0 else 0.0
+        self._clamp_selection_to_total(total)
+
+        sel_start = self.selection_start_sec
+        sel_end = self.selection_end_sec
+        sel_duration = None
+        if sel_start is not None and sel_end is not None:
+            sel_duration = round(sel_end - sel_start, 3)
 
         return {
             "lang": lang,
@@ -581,6 +593,16 @@ class EditorController:
             "output_fps": self.timeline.output_fps,
             "playhead_sec": round(self.playhead_sec, 3),
             "playhead_timecode": format_timecode(self.playhead_sec),
+            "selection_start_sec": (
+                round(sel_start, 3) if sel_start is not None else None
+            ),
+            "selection_end_sec": round(sel_end, 3) if sel_end is not None else None,
+            "selection_duration_sec": sel_duration,
+            "selection_timecode": (
+                f"{format_timecode(sel_start)} – {format_timecode(sel_end)}"
+                if sel_start is not None and sel_end is not None
+                else None
+            ),
             "can_undo": self.history.can_undo(),
             "can_redo": self.history.can_redo(),
         }
@@ -776,6 +798,86 @@ class EditorController:
     def cut_at_playhead(self, duration_sec: float) -> None:
         """Poista aikaväli nykyisestä playhead-kohdasta eteenpäin."""
         self.cut_out_range(self.playhead_sec, duration_sec)
+
+    # ------------------------------------------------------------------
+    # Aluevalinta (range selection)
+    # ------------------------------------------------------------------
+
+    def _clamp_selection_to_total(self, total: float | None = None) -> None:
+        """Rajaa aktiivinen valinta kokonaiskestoon; nollaa jos epäkelpo."""
+        if self.selection_start_sec is None or self.selection_end_sec is None:
+            self.selection_start_sec = None
+            self.selection_end_sec = None
+            return
+        if total is None:
+            total = self.timeline.total_duration()
+        if total <= 0:
+            self.selection_start_sec = None
+            self.selection_end_sec = None
+            return
+        start = min(max(0.0, float(self.selection_start_sec)), total)
+        end = min(max(0.0, float(self.selection_end_sec)), total)
+        if start > end:
+            start, end = end, start
+        if end - start < self.SELECTION_MIN_SEC:
+            self.selection_start_sec = None
+            self.selection_end_sec = None
+            return
+        self.selection_start_sec = start
+        self.selection_end_sec = end
+
+    def set_selection(
+        self,
+        start_sec: float | None,
+        end_sec: float | None,
+    ) -> tuple[float | None, float | None]:
+        """Aseta valintaväli; normalisoi järjestyksen ja rajaa kestoon."""
+        if start_sec is None or end_sec is None:
+            self.selection_start_sec = None
+            self.selection_end_sec = None
+            return None, None
+
+        total = self.timeline.total_duration()
+        if total <= 0:
+            self.selection_start_sec = None
+            self.selection_end_sec = None
+            return None, None
+
+        start = min(max(0.0, float(start_sec)), total)
+        end = min(max(0.0, float(end_sec)), total)
+        if start > end:
+            start, end = end, start
+        if end - start < self.SELECTION_MIN_SEC:
+            self.selection_start_sec = None
+            self.selection_end_sec = None
+            return None, None
+
+        self.selection_start_sec = start
+        self.selection_end_sec = end
+        return self.selection_start_sec, self.selection_end_sec
+
+    def clear_selection(self) -> None:
+        """Tyhjennä aluevalinta."""
+        self.selection_start_sec = None
+        self.selection_end_sec = None
+
+    def has_selection(self) -> bool:
+        return (
+            self.selection_start_sec is not None
+            and self.selection_end_sec is not None
+            and self.selection_end_sec - self.selection_start_sec
+            >= self.SELECTION_MIN_SEC
+        )
+
+    def cut_selected_range(self) -> None:
+        """Leikkaa aktiivinen valintaväli pois aikajanalta."""
+        if not self.has_selection():
+            raise ValueError("no active selection range")
+        start = float(self.selection_start_sec)  # type: ignore[arg-type]
+        end = float(self.selection_end_sec)  # type: ignore[arg-type]
+        duration = end - start
+        self.cut_out_range(start, duration)
+        self.clear_selection()
 
     def get_clip_thumbnail(self, index: int) -> Path:
         """Palauta klipin aloitusframen pikkukuva (1-pohjainen indeksi).

@@ -18,9 +18,17 @@ const state = {
   scrubThrottleTimer: null,
   scrubPendingSec: null,
   lastPostedPlayhead: null,
+  selectionStart: null,
+  selectionEnd: null,
+  selecting: false,
+  selectAnchor: null,
+  selectMode: null, // "paint" | "start" | "end"
+  selectionThrottleTimer: null,
+  lastPostedSelection: null,
 };
 
 const SCRUB_THROTTLE_MS = 100;
+const SELECTION_MIN_SEC = 0.05;
 
 const els = {
   status: document.getElementById("status"),
@@ -38,6 +46,11 @@ const els = {
   scrubberTicks: document.getElementById("scrubber-ticks"),
   scrubberPlayhead: document.getElementById("scrubber-playhead"),
   scrubberTimecode: document.getElementById("scrubber-timecode"),
+  scrubberSelection: document.getElementById("scrubber-selection"),
+  scrubberSelectionRange: document.getElementById("scrubber-selection-range"),
+  scrubberClear: document.getElementById("scrubber-clear"),
+  scrubberHandleStart: document.getElementById("scrubber-handle-start"),
+  scrubberHandleEnd: document.getElementById("scrubber-handle-end"),
   dropzone: document.getElementById("dropzone"),
   fileInput: document.getElementById("file-input"),
   libraryMeta: document.getElementById("library-meta"),
@@ -248,6 +261,132 @@ function scrubTo(sec, { immediate = false } = {}) {
   state.scrubThrottleTimer = setTimeout(flush, SCRUB_THROTTLE_MS);
 }
 
+function normalizeSelection(start, end) {
+  if (start == null || end == null) return { start: null, end: null };
+  let a = clampPlayhead(start);
+  let b = clampPlayhead(end);
+  if (a > b) [a, b] = [b, a];
+  if (b - a < SELECTION_MIN_SEC) return { start: null, end: null };
+  return { start: a, end: b };
+}
+
+function updateSelectionUi(start, end) {
+  const normalized = normalizeSelection(start, end);
+  state.selectionStart = normalized.start;
+  state.selectionEnd = normalized.end;
+  const total = totalDuration();
+  const has =
+    normalized.start != null &&
+    normalized.end != null &&
+    total > 0;
+
+  if (els.scrubberSelectionRange) {
+    els.scrubberSelectionRange.hidden = !has;
+    if (has) {
+      const left = (normalized.start / total) * 100;
+      const width = ((normalized.end - normalized.start) / total) * 100;
+      els.scrubberSelectionRange.style.left = `${left}%`;
+      els.scrubberSelectionRange.style.width = `${Math.max(width, 0.15)}%`;
+    }
+  }
+
+  if (els.scrubberSelection) {
+    els.scrubberSelection.hidden = !has;
+    if (has) {
+      const dur = (normalized.end - normalized.start).toFixed(1).replace(/\.0$/, "");
+      els.scrubberSelection.textContent = t("selectionRange", {
+        start: formatTimecode(normalized.start),
+        end: formatTimecode(normalized.end),
+        duration: dur,
+      });
+    }
+  }
+
+  if (els.scrubberClear) {
+    els.scrubberClear.hidden = !has;
+  }
+}
+
+function postSelection(start, end, { immediate = false } = {}) {
+  const flush = () => {
+    state.selectionThrottleTimer = null;
+    const normalized = normalizeSelection(
+      start ?? state.selectionStart,
+      end ?? state.selectionEnd
+    );
+    const key =
+      normalized.start == null
+        ? "null"
+        : `${normalized.start.toFixed(3)}:${normalized.end.toFixed(3)}`;
+    if (state.lastPostedSelection === key) return;
+    state.lastPostedSelection = key;
+    fetch(withLang("/api/timeline/selection"), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        start_sec: normalized.start,
+        end_sec: normalized.end,
+      }),
+    }).catch(() => {});
+  };
+
+  if (immediate) {
+    if (state.selectionThrottleTimer) {
+      clearTimeout(state.selectionThrottleTimer);
+      state.selectionThrottleTimer = null;
+    }
+    flush();
+    return;
+  }
+  if (state.selectionThrottleTimer) return;
+  state.selectionThrottleTimer = setTimeout(flush, SCRUB_THROTTLE_MS);
+}
+
+function paintSelectionTo(sec, { immediate = false, edgeSec = null } = {}) {
+  const tip = clampPlayhead(sec);
+  let start;
+  let end;
+  if (state.selectMode === "start") {
+    end = state.selectionEnd ?? tip;
+    start = tip;
+  } else if (state.selectMode === "end") {
+    start = state.selectionStart ?? tip;
+    end = tip;
+  } else {
+    start = state.selectAnchor ?? tip;
+    end = tip;
+  }
+  updateSelectionUi(start, end);
+  const previewSec = edgeSec != null ? edgeSec : tip;
+  updatePlayheadUi(previewSec);
+  const flushEdge = () => {
+    showStillAt(previewSec);
+    postPlayhead(previewSec);
+    postSelection(state.selectionStart, state.selectionEnd, { immediate: true });
+  };
+  if (immediate) {
+    if (state.scrubThrottleTimer) {
+      clearTimeout(state.scrubThrottleTimer);
+      state.scrubThrottleTimer = null;
+    }
+    flushEdge();
+    return;
+  }
+  state.scrubPendingSec = previewSec;
+  if (state.scrubThrottleTimer) return;
+  state.scrubThrottleTimer = setTimeout(() => {
+    state.scrubThrottleTimer = null;
+    showStillAt(state.scrubPendingSec);
+    postPlayhead(state.scrubPendingSec);
+    postSelection(state.selectionStart, state.selectionEnd);
+  }, SCRUB_THROTTLE_MS);
+}
+
+function clearSelectionUiAndServer() {
+  updateSelectionUi(null, null);
+  postSelection(null, null, { immediate: true });
+}
+
 function secFromPointerEvent(e) {
   if (!els.scrubberTrack) return 0;
   const rect = els.scrubberTrack.getBoundingClientRect();
@@ -265,6 +404,7 @@ function renderScrubber() {
   els.scrubberTicks.innerHTML = "";
   if (!clips.length || total <= 0) {
     updatePlayheadUi(0);
+    updateSelectionUi(null, null);
     return;
   }
 
@@ -293,6 +433,10 @@ function renderScrubber() {
   }
 
   updatePlayheadUi(state.summary?.playhead_sec ?? state.playheadSec);
+  updateSelectionUi(
+    state.summary?.selection_start_sec ?? state.selectionStart,
+    state.summary?.selection_end_sec ?? state.selectionEnd
+  );
 }
 
 function transitionForClip(afterClip1Based) {
@@ -325,6 +469,12 @@ function applyState(summary) {
 
   if (typeof summary.playhead_sec === "number") {
     state.playheadSec = clampPlayhead(summary.playhead_sec);
+  }
+  if (!state.selecting) {
+    state.selectionStart =
+      summary.selection_start_sec == null ? null : Number(summary.selection_start_sec);
+    state.selectionEnd =
+      summary.selection_end_sec == null ? null : Number(summary.selection_end_sec);
   }
   renderClipStrip();
   renderScrubber();
@@ -839,19 +989,68 @@ function wireEvents() {
     }
   });
 
+  if (els.scrubberClear) {
+    els.scrubberClear.addEventListener("click", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      clearSelectionUiAndServer();
+    });
+  }
+
   if (els.scrubberTrack) {
-    const onPointerDown = (e) => {
+    const beginSelect = (e, mode) => {
       if (!totalDuration()) return;
       e.preventDefault();
+      e.stopPropagation();
+      state.selecting = true;
+      state.scrubbing = false;
+      state.selectMode = mode;
+      const tip = secFromPointerEvent(e);
+      if (mode === "paint") {
+        state.selectAnchor = tip;
+        updateSelectionUi(tip, tip);
+      }
+      els.scrubberTrack.setPointerCapture?.(e.pointerId);
+      paintSelectionTo(tip, { immediate: true, edgeSec: tip });
+    };
+
+    const onPointerDown = (e) => {
+      if (!totalDuration()) return;
+      if (e.target === els.scrubberHandleStart) {
+        beginSelect(e, "start");
+        return;
+      }
+      if (e.target === els.scrubberHandleEnd) {
+        beginSelect(e, "end");
+        return;
+      }
+      if (e.shiftKey) {
+        beginSelect(e, "paint");
+        return;
+      }
+      e.preventDefault();
       state.scrubbing = true;
+      state.selecting = false;
+      state.selectMode = null;
       els.scrubberTrack.setPointerCapture?.(e.pointerId);
       scrubTo(secFromPointerEvent(e), { immediate: true });
     };
     const onPointerMove = (e) => {
+      if (state.selecting) {
+        paintSelectionTo(secFromPointerEvent(e));
+        return;
+      }
       if (!state.scrubbing) return;
       scrubTo(secFromPointerEvent(e));
     };
     const onPointerUp = (e) => {
+      if (state.selecting) {
+        state.selecting = false;
+        paintSelectionTo(secFromPointerEvent(e), { immediate: true });
+        state.selectMode = null;
+        state.selectAnchor = null;
+        return;
+      }
       if (!state.scrubbing) return;
       state.scrubbing = false;
       scrubTo(secFromPointerEvent(e), { immediate: true });
@@ -863,6 +1062,11 @@ function wireEvents() {
     els.scrubberTrack.addEventListener("keydown", (e) => {
       const total = totalDuration();
       if (!total) return;
+      if (e.key === "Escape") {
+        e.preventDefault();
+        clearSelectionUiAndServer();
+        return;
+      }
       const step = e.shiftKey ? 1 : 0.1;
       let next = state.playheadSec;
       if (e.key === "ArrowLeft") next -= step;
