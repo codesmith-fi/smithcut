@@ -2,6 +2,10 @@
 
 **CutSmith** is an AI-assisted, non-destructive video editor controlled via natural language directly in your browser. Editing commands—such as cuts, crossfades, blur transitions, and independent audio track management—compile directly into a single-pass FFmpeg `filter_complex` pipeline built on a strict Model-View-Controller (MVC) architecture.
 
+Author: Erno Pakarinen / CODESMITH
+
+Open source - Free - MIT LICENSE
+
 ## Features
 
 - **Natural Language Editing:** Cut scenes, split clips at timestamps or the playhead marker, apply transitions, and manage audio tracks in English or Finnish.
