@@ -1,0 +1,133 @@
+"""Aito FFmpeg-integraatio: preview-renderöinti testsrc-videolla."""
+
+from __future__ import annotations
+
+import shutil
+import subprocess
+from pathlib import Path
+
+import pytest
+
+from compiler.ffmpeg import compile_timeline, format_ffmpeg_error
+from model.timeline import Clip, TextEffect, Timeline, VideoSource, ZoomEffect
+
+ffmpeg_bin = shutil.which("ffmpeg")
+pytestmark = pytest.mark.skipif(ffmpeg_bin is None, reason="ffmpeg not installed")
+
+
+def _make_testsrc(path: Path, *, duration: float = 6.0, size: str = "1280x720") -> None:
+    cmd = [
+        "ffmpeg",
+        "-y",
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-f",
+        "lavfi",
+        "-i",
+        f"testsrc=size={size}:rate=30:duration={duration}",
+        "-f",
+        "lavfi",
+        "-i",
+        f"sine=frequency=440:sample_rate=44100:duration={duration}",
+        "-c:v",
+        "libx264",
+        "-preset",
+        "ultrafast",
+        "-pix_fmt",
+        "yuv420p",
+        "-c:a",
+        "aac",
+        "-shortest",
+        str(path),
+    ]
+    result = subprocess.run(cmd, capture_output=True, text=True, check=False)
+    assert result.returncode == 0, result.stderr
+    assert path.is_file()
+
+
+def test_format_ffmpeg_error_prefers_tail_and_error_lines():
+    stderr = (
+        "Input #0, mov,mp4,m4a,3gp,3g2,mj2, from '/tmp/x.mp4':\n"
+        "  Metadata:\n"
+        "    encoder         : Lavf\n"
+        "  Duration: 00:00:08.00\n"
+        "Stream mapping:\n"
+        "[Parsed_pad_5 @ 0x1] Padded dimensions cannot be smaller than input dimensions.\n"
+        "Error while filtering: Invalid argument\n"
+        "Conversion failed!\n"
+    )
+    msg = format_ffmpeg_error(stderr)
+    assert "Input #0" not in msg
+    assert "Padded dimensions" in msg
+    assert "Invalid argument" in msg
+    assert "Conversion failed" in msg
+
+
+def test_compile_timeline_preview_with_trim_start(tmp_path: Path):
+    src = tmp_path / "src.mp4"
+    out = tmp_path / "preview.mp4"
+    _make_testsrc(src, duration=6.0, size="1280x720")
+
+    tl = Timeline(
+        sources={
+            "src1": VideoSource(
+                id="src1",
+                path=str(src),
+                duration=6.0,
+                width=1280,
+                height=720,
+                fps=30.0,
+                has_audio=True,
+            )
+        },
+        clips=[Clip(id="c0", source_id="src1", in_sec=1.25, out_sec=4.5)],
+        output_fps=30,
+    )
+
+    result = compile_timeline(tl, out, mode="preview")
+    assert Path(result).is_file()
+    assert Path(result).stat().st_size > 1000
+
+
+def test_compile_timeline_preview_with_effects_and_trim(tmp_path: Path):
+    src = tmp_path / "src.mp4"
+    out = tmp_path / "preview_fx.mp4"
+    _make_testsrc(src, duration=5.0, size="1920x1080")
+
+    tl = Timeline(
+        sources={
+            "src1": VideoSource(
+                id="src1",
+                path=str(src),
+                duration=5.0,
+                width=1920,
+                height=1080,
+                fps=30.0,
+                has_audio=True,
+            )
+        },
+        clips=[
+            Clip(
+                id="c0",
+                source_id="src1",
+                in_sec=0.5,
+                out_sec=4.0,
+                effects=[
+                    ZoomEffect(
+                        start_sec=0.2,
+                        duration=1.0,
+                        target_x=0.4,
+                        target_y=0.6,
+                        zoom_factor=1.6,
+                    ),
+                    TextEffect(text="Preview", start_sec=0.0, duration=1.5),
+                ],
+            )
+        ],
+        output_fps=30,
+    )
+
+    result = compile_timeline(tl, out, mode="preview")
+    assert Path(result).is_file()
+    assert Path(result).stat().st_size > 1000

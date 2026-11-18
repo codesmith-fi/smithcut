@@ -33,8 +33,52 @@ def normalize_render_mode(mode: str) -> RenderProfile:
     return "preview"
 
 
-def _even_dim(value: int) -> int:
-    return max(2, int(value) - (int(value) % 2))
+def _even_dim(value: float | int) -> int:
+    """Pyöristä ylöspäin parilliseksi (vastaa FFmpegin scale=-2 -logiikkaa)."""
+    n = max(2, int(round(float(value))))
+    return n if n % 2 == 0 else n + 1
+
+
+def format_ffmpeg_error(stderr: str, *, limit: int = 800) -> str:
+    """Poimi stderristä varsinainen virhe (loppu / Error-rivit), ei Input-metaa."""
+    text = (stderr or "").strip()
+    if not text:
+        return "(no stderr)"
+
+    lines = text.splitlines()
+    keys = (
+        "Error",
+        "Invalid",
+        "Unable",
+        "failed",
+        "Failed",
+        "Conversion failed",
+        "No such",
+        "not found",
+        "cannot",
+        "Cannot",
+        "Failed to configure",
+        "Error reinitializing",
+        "Nothing was written",
+    )
+    picked: list[str] = []
+    for i, ln in enumerate(lines):
+        if any(key in ln for key in keys):
+            # Sisällytä 1 rivi kontekstia ennen virhettä (Parsed_* -rivit)
+            start = max(0, i - 1)
+            for ctx in lines[start : i + 1]:
+                if ctx not in picked:
+                    picked.append(ctx)
+
+    if picked:
+        chunk = "\n".join(picked[-30:])
+    else:
+        # Ei avainsanoja → viimeiset rivit (ei tulosteen alkua / Input #0)
+        chunk = "\n".join(lines[-25:])
+
+    if len(chunk) > limit:
+        return chunk[-limit:]
+    return chunk
 
 
 def _env() -> dict[str, str]:
@@ -313,22 +357,15 @@ def _clip_video_filter(
     if clip.speed != 1.0:
         parts.append(f"setpts=PTS/{clip.speed}")
     parts.append(f"fps={fps}")
-    if profile == "preview":
-        # Kevyt 480p-esikatselu: scale=-2:480 + parilliset mitat
-        parts.extend(
-            [
-                f"scale=-2:{PREVIEW_HEIGHT}",
-                "scale=trunc(iw/2)*2:trunc(ih/2)*2",
-                f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2",
-            ]
-        )
-    else:
-        parts.extend(
-            [
-                f"scale={width}:{height}:force_original_aspect_ratio=decrease",
-                f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2",
-            ]
-        )
+    # Preview & export: sama pad-logiikka (pad >= skaalattu kuva).
+    # Älä käytä erillistä scale=-2:H + trunc + pad=W:H -yhdistelmää:
+    # scale=-2:480 voi tuottaa leveämmän kuvan kuin _output_size → pad failaa.
+    parts.extend(
+        [
+            f"scale={width}:{height}:force_original_aspect_ratio=decrease",
+            f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2",
+        ]
+    )
     parts.extend(["setsar=1", "format=yuv420p"])
     parts.extend(_effect_filters(clip, width, height, fps))
     return ",".join(parts) + f"[{out_label}]"
@@ -585,7 +622,7 @@ def render(
         check=False,
     )
     if result.returncode != 0:
-        detail = (result.stderr or result.stdout or "").strip()
+        detail = format_ffmpeg_error(result.stderr or result.stdout or "")
         raise RuntimeError(f"ffmpeg render failed:\n{detail}")
     return str(output_path)
 
@@ -642,7 +679,7 @@ def _render_with_progress(
             proc.kill()
 
     if returncode != 0:
-        detail = "".join(stderr_chunks).strip()
+        detail = format_ffmpeg_error("".join(stderr_chunks))
         raise RuntimeError(f"ffmpeg render failed:\n{detail}")
     if last_percent < 100:
         on_progress(100)
@@ -689,6 +726,6 @@ def extract_clip_thumbnail(
         check=False,
     )
     if result.returncode != 0 or not output_path.is_file():
-        detail = (result.stderr or result.stdout or "").strip()
+        detail = format_ffmpeg_error(result.stderr or result.stdout or "")
         raise RuntimeError(f"thumbnail extraction failed:\n{detail}")
     return output_path

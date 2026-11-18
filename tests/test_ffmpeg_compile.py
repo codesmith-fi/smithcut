@@ -109,9 +109,9 @@ def test_three_clip_filter_contains_xfade_zoompan_drawtext():
     # Toinen: 5 + 5 - 0.4 - 0.4 = 9.2
     assert "offset=9.200000" in fc
 
-    # Preview-skaalaus: scale=-2:480 + parilliset mitat
-    assert f"scale=-2:{PREVIEW_HEIGHT}" in fc
-    assert "scale=trunc(iw/2)*2:trunc(ih/2)*2" in fc
+    # Preview-skaalaus: 480p-canvas (parillinen leveys) + pad
+    assert f"scale=854:{PREVIEW_HEIGHT}:force_original_aspect_ratio=decrease" in fc
+    assert f"pad=854:{PREVIEW_HEIGHT}:" in fc
 
 
 def test_filter_uses_trim_and_setpts_per_clip():
@@ -171,10 +171,11 @@ def test_preview_vs_export_profiles():
     assert "28" in preview
     assert "-threads" in preview
     assert "96k" in preview
-    # 1920x1080 → 480p: leveys parilliseksi (852)
-    assert "852x480" in preview
+    # 1920x1080 → 480p: leveys parilliseksi ylöspäin (854)
+    assert "854x480" in preview
     fc_preview = preview[preview.index("-filter_complex") + 1]
-    assert f"scale=-2:{PREVIEW_HEIGHT}" in fc_preview
+    assert f"scale=854:{PREVIEW_HEIGHT}:force_original_aspect_ratio=decrease" in fc_preview
+    assert f"pad=854:{PREVIEW_HEIGHT}:" in fc_preview
 
     with patch("compiler.ffmpeg.nvenc_available", return_value=False):
         export = build_command(tl, "/tmp/final.mp4", mode="export")
@@ -182,10 +183,10 @@ def test_preview_vs_export_profiles():
     assert "libx264" in export
     assert "18" in export
     assert "192k" in export
-    assert "852x480" not in export
+    assert "854x480" not in export
     fc_export = export[export.index("-filter_complex") + 1]
     assert "scale=1920:1080" in fc_export
-    assert f"scale=-2:{PREVIEW_HEIGHT}" not in fc_export
+    assert f"scale=854:{PREVIEW_HEIGHT}" not in fc_export
 
     # final on alias exportille
     with patch("compiler.ffmpeg.nvenc_available", return_value=False):
