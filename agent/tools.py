@@ -205,6 +205,35 @@ OLLAMA_TOOLS: list[dict[str, Any]] = [
             "parameters": {"type": "object", "properties": {}, "required": []},
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "cut_timeline_range",
+            "description": (
+                "Remove a time range from the timeline. If start_sec is omitted, "
+                "cut starts at the current playhead marker. Use this for requests "
+                "like 'cut 10 seconds from the playhead' or "
+                "'Leikkaa timeline markkerin valitusta kohdasta 10 sekuntia pois'."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "duration_sec": {
+                        "type": "number",
+                        "description": "How many seconds to remove.",
+                    },
+                    "start_sec": {
+                        "type": "number",
+                        "description": (
+                            "Optional timeline start (seconds). "
+                            "Defaults to current playhead_sec when omitted."
+                        ),
+                    },
+                },
+                "required": ["duration_sec"],
+            },
+        },
+    },
 ]
 
 
@@ -327,6 +356,24 @@ def execute_tool(
         if name == "redo":
             ok = editor.redo()
             return json.dumps({"ok": ok}), ok
+
+        if name == "cut_timeline_range":
+            duration = float(args["duration_sec"])
+            start = args.get("start_sec")
+            if start is None:
+                used_start = editor.playhead_sec
+                editor.cut_at_playhead(duration)
+            else:
+                used_start = float(start)
+                editor.cut_out_range(used_start, duration)
+            return json.dumps(
+                {
+                    "ok": True,
+                    "start_sec": used_start,
+                    "duration_sec": duration,
+                    "playhead_sec": editor.playhead_sec,
+                }
+            ), changed
 
         return json.dumps({"error": f"Unknown tool: {name}"}), False
     except Exception as exc:  # noqa: BLE001 – LLM tarvitsee selkeän virheen

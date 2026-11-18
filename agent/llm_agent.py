@@ -87,12 +87,20 @@ def _system_prompt(lang: str, state_summary: dict[str, Any]) -> str:
             "ei FFmpeg-puhetta, ei JSON-dumppia."
         )
 
+    playhead = state_summary.get("playhead_sec", 0.0)
+    playhead_tc = state_summary.get("playhead_timecode", "00:00.0")
     return (
         "/no_think\n"
         "You are CutSmith, a friendly local video-editing assistant.\n"
         f"{language_line}\n"
         "Use tools to edit the timeline. Clip and transition indices are "
         "1-based (the first clip is 1; after_clip=1 is between clip 1 and 2).\n"
+        f"The timeline playhead (marker) is currently at {playhead_tc} "
+        f"({playhead} s). When the user asks to cut from the playhead / "
+        "timeline marker (e.g. 'Cut 5 seconds starting at the playhead' or "
+        "'Leikkaa timeline markkerin valitusta kohdasta 10 sekuntia pois'), "
+        "call cut_timeline_range with duration_sec and omit start_sec so it "
+        "uses the playhead.\n"
         "Batch all needed tool calls first; do not ask the user to preview — "
         "the app renders preview once after you finish.\n"
         "After tools finish, give a short plain-language confirmation of what changed.\n"
@@ -173,9 +181,8 @@ def run_agent(
     lang = normalize_lang(lang)
     model = model or _model_name()
     strings = _ERROR_I18N[lang]
-    state = editor.get_state_summary(lang=lang)
     messages: list[dict[str, Any]] = [
-        {"role": "system", "content": _system_prompt(lang, state)},
+        {"role": "system", "content": ""},
         {"role": "user", "content": message.strip()},
     ]
 
@@ -186,6 +193,13 @@ def run_agent(
 
     try:
         for _ in range(MAX_TOOL_ROUNDS):
+            # Päivitä playhead + tila joka kierroksella
+            messages[0] = {
+                "role": "system",
+                "content": _system_prompt(
+                    lang, editor.get_state_summary(lang=lang)
+                ),
+            }
             data = _chat_once(http, model=model, messages=messages)
             msg = data.get("message") or {}
             tool_calls = _parse_tool_calls(msg)

@@ -60,6 +60,7 @@ def test_mcp_lists_expected_tools(editor: EditorController):
         "undo",
         "redo",
         "get_state",
+        "cut_timeline_range",
     } <= names
     by_name = {t.name: t for t in tools}
     assert "1-based" in (by_name["add_text"].description or "")

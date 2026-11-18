@@ -12,7 +12,15 @@ const state = {
   selectedClip: 1,
   busy: false,
   pollTimer: null,
+  playheadSec: 0,
+  scrubbing: false,
+  stillMode: false,
+  scrubThrottleTimer: null,
+  scrubPendingSec: null,
+  lastPostedPlayhead: null,
 };
+
+const SCRUB_THROTTLE_MS = 100;
 
 const els = {
   status: document.getElementById("status"),
@@ -20,9 +28,16 @@ const els = {
   redo: document.getElementById("btn-redo"),
   exportBtn: document.getElementById("btn-export"),
   preview: document.getElementById("preview"),
+  stillFrame: document.getElementById("still-frame"),
   previewStage: document.getElementById("preview-stage"),
   previewEmpty: document.getElementById("preview-empty"),
   zoomToast: document.getElementById("zoom-toast"),
+  scrubber: document.getElementById("scrubber"),
+  scrubberTrack: document.getElementById("scrubber-track"),
+  scrubberBlocks: document.getElementById("scrubber-blocks"),
+  scrubberTicks: document.getElementById("scrubber-ticks"),
+  scrubberPlayhead: document.getElementById("scrubber-playhead"),
+  scrubberTimecode: document.getElementById("scrubber-timecode"),
   dropzone: document.getElementById("dropzone"),
   fileInput: document.getElementById("file-input"),
   libraryMeta: document.getElementById("library-meta"),
@@ -142,6 +157,144 @@ function formatSeconds(sec) {
   return t("minutesSeconds", { m, s });
 }
 
+function formatTimecode(sec) {
+  const n = Math.max(0, Number(sec) || 0);
+  const m = Math.floor(n / 60);
+  const s = n - m * 60;
+  return `${String(m).padStart(2, "0")}:${s.toFixed(1).padStart(4, "0")}`;
+}
+
+function totalDuration() {
+  return Math.max(0, Number(state.summary?.total_duration_sec) || 0);
+}
+
+function clampPlayhead(sec) {
+  const total = totalDuration();
+  if (total <= 0) return 0;
+  return Math.min(total, Math.max(0, Number(sec) || 0));
+}
+
+function setStillMode(on) {
+  state.stillMode = Boolean(on);
+  els.previewStage?.classList.toggle("is-scrubbing", state.stillMode);
+  if (els.stillFrame) {
+    els.stillFrame.hidden = !state.stillMode;
+  }
+}
+
+function showStillAt(sec) {
+  if (!els.stillFrame) return;
+  const tSec = clampPlayhead(sec);
+  setStillMode(true);
+  els.stillFrame.src = `/api/timeline/frame?t=${encodeURIComponent(tSec.toFixed(3))}&_=${Date.now()}`;
+}
+
+function updatePlayheadUi(sec) {
+  const value = clampPlayhead(sec);
+  state.playheadSec = value;
+  const total = totalDuration();
+  const pct = total > 0 ? (value / total) * 100 : 0;
+  if (els.scrubberPlayhead) {
+    els.scrubberPlayhead.style.left = `${pct}%`;
+  }
+  if (els.scrubberTimecode) {
+    els.scrubberTimecode.textContent = formatTimecode(value);
+  }
+  if (els.scrubberTrack) {
+    els.scrubberTrack.setAttribute("aria-valuenow", String(Math.round(value * 10) / 10));
+    els.scrubberTrack.setAttribute("aria-valuemax", String(total));
+  }
+}
+
+function postPlayhead(sec) {
+  const value = clampPlayhead(sec);
+  if (
+    state.lastPostedPlayhead != null &&
+    Math.abs(state.lastPostedPlayhead - value) < 0.01
+  ) {
+    return;
+  }
+  state.lastPostedPlayhead = value;
+  fetch(withLang("/api/timeline/playhead"), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ sec: value }),
+  }).catch(() => {});
+}
+
+function scrubTo(sec, { immediate = false } = {}) {
+  const value = clampPlayhead(sec);
+  updatePlayheadUi(value);
+  state.scrubPendingSec = value;
+
+  const flush = () => {
+    state.scrubThrottleTimer = null;
+    const pending = state.scrubPendingSec;
+    if (pending == null) return;
+    showStillAt(pending);
+    postPlayhead(pending);
+  };
+
+  if (immediate) {
+    if (state.scrubThrottleTimer) {
+      clearTimeout(state.scrubThrottleTimer);
+      state.scrubThrottleTimer = null;
+    }
+    flush();
+    return;
+  }
+
+  if (state.scrubThrottleTimer) return;
+  state.scrubThrottleTimer = setTimeout(flush, SCRUB_THROTTLE_MS);
+}
+
+function secFromPointerEvent(e) {
+  if (!els.scrubberTrack) return 0;
+  const rect = els.scrubberTrack.getBoundingClientRect();
+  const x = Math.min(Math.max(e.clientX - rect.left, 0), rect.width || 1);
+  const ratio = rect.width > 0 ? x / rect.width : 0;
+  return clampPlayhead(ratio * totalDuration());
+}
+
+function renderScrubber() {
+  if (!els.scrubber || !els.scrubberBlocks || !els.scrubberTicks) return;
+  const clips = state.summary?.clips || [];
+  const total = totalDuration();
+  els.scrubber.hidden = clips.length === 0 || total <= 0;
+  els.scrubberBlocks.innerHTML = "";
+  els.scrubberTicks.innerHTML = "";
+  if (!clips.length || total <= 0) {
+    updatePlayheadUi(0);
+    return;
+  }
+
+  clips.forEach((clip) => {
+    const start = Number(clip.timeline_start_sec ?? 0);
+    const end = Number(clip.timeline_end_sec ?? start + (clip.duration_sec || 0));
+    const left = (start / total) * 100;
+    const width = Math.max(0.4, ((end - start) / total) * 100);
+    const block = document.createElement("div");
+    block.className = "scrubber-block";
+    block.style.left = `${left}%`;
+    block.style.width = `${width}%`;
+    const label = document.createElement("span");
+    label.textContent = clip.title || t("clipTitle", { n: clip.index });
+    block.appendChild(label);
+    els.scrubberBlocks.appendChild(block);
+  });
+
+  const step = total <= 10 ? 1 : total <= 30 ? 5 : total <= 120 ? 10 : 30;
+  for (let mark = 0; mark <= total + 1e-9; mark += step) {
+    const tick = document.createElement("div");
+    tick.className = "scrubber-tick";
+    tick.style.left = `${(mark / total) * 100}%`;
+    tick.dataset.label = formatTimecode(mark);
+    els.scrubberTicks.appendChild(tick);
+  }
+
+  updatePlayheadUi(state.summary?.playhead_sec ?? state.playheadSec);
+}
+
 function transitionForClip(afterClip1Based) {
   const list = state.summary?.transitions || [];
   return list.find((item) => item.after_clip === afterClip1Based) || null;
@@ -170,7 +323,11 @@ function applyState(summary) {
     els.libraryMeta.textContent = t(key, { count: sourceCount }) + music;
   }
 
+  if (typeof summary.playhead_sec === "number") {
+    state.playheadSec = clampPlayhead(summary.playhead_sec);
+  }
   renderClipStrip();
+  renderScrubber();
   updatePreview(summary.preview_url);
 }
 
@@ -180,23 +337,31 @@ function updatePreview(url) {
   if (!hasPreview) {
     els.preview.removeAttribute("src");
     els.preview.load();
+    setStillMode(false);
     return;
   }
   const next = `${url}?t=${Date.now()}`;
-  const resume = els.preview.currentTime || 0;
-  const wasPaused = els.preview.paused;
+  const resume = state.playheadSec || els.preview.currentTime || 0;
+  const wasPaused = els.preview.paused && !state.scrubbing;
+  const keepStill = state.stillMode || state.scrubbing;
   els.preview.src = next;
   els.preview.load();
   els.preview.addEventListener(
     "loadedmetadata",
     () => {
       try {
-        els.preview.currentTime = Math.min(resume, els.preview.duration || resume);
+        els.preview.currentTime = Math.min(
+          resume,
+          els.preview.duration || resume
+        );
       } catch {
         /* ignore seek errors */
       }
-      if (!wasPaused) {
+      if (!wasPaused && !keepStill) {
+        setStillMode(false);
         els.preview.play().catch(() => {});
+      } else if (keepStill) {
+        showStillAt(state.playheadSec);
       }
     },
     { once: true }
@@ -648,8 +813,67 @@ function wireEvents() {
   });
 
   els.preview.addEventListener("click", (e) => {
+    if (state.stillMode) return;
     addZoomAtClick(e).catch(() => {});
   });
+
+  els.preview.addEventListener("play", () => {
+    setStillMode(false);
+    try {
+      els.preview.currentTime = clampPlayhead(state.playheadSec);
+    } catch {
+      /* ignore */
+    }
+  });
+
+  els.preview.addEventListener("timeupdate", () => {
+    if (state.scrubbing || state.stillMode || els.preview.paused) return;
+    updatePlayheadUi(els.preview.currentTime || 0);
+  });
+
+  els.preview.addEventListener("seeked", () => {
+    if (state.scrubbing) return;
+    if (!els.preview.paused) {
+      updatePlayheadUi(els.preview.currentTime || 0);
+      postPlayhead(state.playheadSec);
+    }
+  });
+
+  if (els.scrubberTrack) {
+    const onPointerDown = (e) => {
+      if (!totalDuration()) return;
+      e.preventDefault();
+      state.scrubbing = true;
+      els.scrubberTrack.setPointerCapture?.(e.pointerId);
+      scrubTo(secFromPointerEvent(e), { immediate: true });
+    };
+    const onPointerMove = (e) => {
+      if (!state.scrubbing) return;
+      scrubTo(secFromPointerEvent(e));
+    };
+    const onPointerUp = (e) => {
+      if (!state.scrubbing) return;
+      state.scrubbing = false;
+      scrubTo(secFromPointerEvent(e), { immediate: true });
+    };
+    els.scrubberTrack.addEventListener("pointerdown", onPointerDown);
+    els.scrubberTrack.addEventListener("pointermove", onPointerMove);
+    els.scrubberTrack.addEventListener("pointerup", onPointerUp);
+    els.scrubberTrack.addEventListener("pointercancel", onPointerUp);
+    els.scrubberTrack.addEventListener("keydown", (e) => {
+      const total = totalDuration();
+      if (!total) return;
+      const step = e.shiftKey ? 1 : 0.1;
+      let next = state.playheadSec;
+      if (e.key === "ArrowLeft") next -= step;
+      else if (e.key === "ArrowRight") next += step;
+      else if (e.key === "Home") next = 0;
+      else if (e.key === "End") next = total;
+      else return;
+      e.preventDefault();
+      scrubTo(next, { immediate: true });
+    });
+  }
 
   document.querySelectorAll("[data-quick]").forEach((btn) => {
     btn.addEventListener("click", () => {

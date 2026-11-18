@@ -7,7 +7,7 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-from compiler.ffmpeg import extract_clip_thumbnail
+from compiler.ffmpeg import extract_clip_thumbnail, extract_still_frame
 from compiler.ffmpeg import render as ffmpeg_render
 from compiler.ffprobe import probe
 from model.history import HistoryManager
@@ -98,6 +98,14 @@ def _new_id(prefix: str) -> str:
     return f"{prefix}_{uuid.uuid4().hex[:8]}"
 
 
+def format_timecode(sec: float) -> str:
+    """Muotoile sekunnit MM:SS.d -aikakoodiksi."""
+    sec = max(0.0, float(sec))
+    minutes = int(sec // 60)
+    seconds = sec - minutes * 60
+    return f"{minutes:02d}:{seconds:04.1f}"
+
+
 class EditorController:
     """Suorittaa atomiset editointioperaatiot ja hallitsee Undo/Redo-pinon."""
 
@@ -110,6 +118,7 @@ class EditorController:
         self.workspace.mkdir(parents=True, exist_ok=True)
         self.timeline = timeline or Timeline()
         self.history = HistoryManager()
+        self.playhead_sec: float = 0.0
         self._progress: dict[str, Any] = {
             "active": False,
             "phase": "idle",
@@ -460,6 +469,9 @@ class EditorController:
         lang = normalize_lang(lang)
         L = _SUMMARY_I18N[lang]
 
+        spans = self.clip_spans()
+        span_by_index = {i: (start, end) for i, start, end in spans}
+
         clips_summary = []
         for i, clip in enumerate(self.timeline.clips):
             source = self.timeline.sources.get(clip.source_id)
@@ -490,6 +502,7 @@ class EditorController:
                         }
                     )
             clip_index = i + 1
+            t_start, t_end = span_by_index.get(i, (0.0, clip.duration))
             clips_summary.append(
                 {
                     "index": clip_index,
@@ -501,6 +514,8 @@ class EditorController:
                     "trim_start": clip.in_sec,
                     "out_sec": clip.out_sec,
                     "duration_sec": round(clip.duration, 3),
+                    "timeline_start_sec": round(t_start, 3),
+                    "timeline_end_sec": round(t_end, 3),
                     "speed": clip.speed,
                     "effects": effects,
                 }
@@ -551,6 +566,9 @@ class EditorController:
                 transitions=len(self.timeline.transitions),
             )
 
+        # Pidä playhead synkassa kokonaiskestoon
+        self.playhead_sec = min(self.playhead_sec, total) if total > 0 else 0.0
+
         return {
             "lang": lang,
             "description": description,
@@ -561,9 +579,203 @@ class EditorController:
             "bgm": bgm,
             "total_duration_sec": total,
             "output_fps": self.timeline.output_fps,
+            "playhead_sec": round(self.playhead_sec, 3),
+            "playhead_timecode": format_timecode(self.playhead_sec),
             "can_undo": self.history.can_undo(),
             "can_redo": self.history.can_redo(),
         }
+
+    # ------------------------------------------------------------------
+    # Playhead & aikavälileikkaus
+    # ------------------------------------------------------------------
+
+    def clip_spans(self) -> list[tuple[int, float, float]]:
+        """(clip_index, timeline_start, timeline_end) siirtymät huomioiden."""
+        spans: list[tuple[int, float, float]] = []
+        cursor = 0.0
+        n = len(self.timeline.clips)
+        for i, clip in enumerate(self.timeline.clips):
+            start = cursor
+            end = cursor + clip.duration
+            spans.append((i, start, end))
+            cursor = end
+            transition = self.timeline.transition_after(i)
+            if transition is not None and i < n - 1:
+                cursor -= transition.duration
+        return spans
+
+    def set_playhead(self, sec: float) -> float:
+        """Aseta playhead; raja-arvot 0 .. total_duration."""
+        total = self.timeline.total_duration()
+        value = float(sec)
+        if value < 0:
+            value = 0.0
+        if total <= 0:
+            value = 0.0
+        elif value > total:
+            value = total
+        self.playhead_sec = value
+        return self.playhead_sec
+
+    def locate_timeline_sec(self, sec: float) -> tuple[int, float] | None:
+        """Palauta (clip_index, source_timestamp) aikajanan sekunnille."""
+        if not self.timeline.clips:
+            return None
+        total = self.timeline.total_duration()
+        sec = min(max(0.0, float(sec)), total if total > 0 else 0.0)
+        spans = self.clip_spans()
+        match: tuple[int, float, float] | None = None
+        for span in spans:
+            i, start, end = span
+            if start <= sec <= end + 1e-9:
+                match = span
+        if match is None:
+            match = spans[-1]
+            sec = match[2]
+        i, start, _end = match
+        clip = self.timeline.clips[i]
+        local = max(0.0, sec - start)
+        # lokalisaatio klipin lähdeaikaan (speed huomioiden)
+        source_ts = clip.in_sec + local * clip.speed
+        source_ts = min(max(clip.in_sec, source_ts), clip.out_sec)
+        return i, source_ts
+
+    def get_frame_at_time(self, sec: float) -> Path:
+        """Poimi still-JPEG aikajanan kohdasta (välimuisti workspace/frames/)."""
+        located = self.locate_timeline_sec(sec)
+        if located is None:
+            raise ValueError("timeline has no clips")
+        _clip_index, source_ts = located
+        clip = self.timeline.clips[_clip_index]
+        source = self.timeline.sources[clip.source_id]
+        source_path = Path(source.path)
+        try:
+            mtime = source_path.stat().st_mtime if source_path.is_file() else 0.0
+        except OSError:
+            mtime = 0.0
+        digest = hashlib.sha256(
+            f"{source_path.resolve()}|{mtime:.6f}|{source_ts:.3f}".encode()
+        ).hexdigest()[:16]
+        frames_dir = Path(self.workspace) / "frames"
+        frames_dir.mkdir(parents=True, exist_ok=True)
+        output = frames_dir / f"{digest}.jpg"
+        if output.is_file() and output.stat().st_size > 0:
+            return output
+        return extract_still_frame(source_path, source_ts, output, scale="960:-1")
+
+    def _effects_for_subclip(
+        self,
+        clip: Clip,
+        local_start: float,
+        local_end: float,
+    ) -> list:
+        """Siirrä/suodata efektit aliklippille [local_start, local_end) klipin ajassa."""
+        kept = []
+        span = local_end - local_start
+        for effect in clip.effects:
+            e_start = effect.start_sec
+            e_end = effect.start_sec + effect.duration
+            if e_end <= local_start + 1e-9 or e_start >= local_end - 1e-9:
+                continue
+            new_start = max(0.0, e_start - local_start)
+            new_end = min(span, e_end - local_start)
+            if new_end - new_start <= 1e-9:
+                continue
+            kept.append(
+                effect.model_copy(
+                    update={"start_sec": new_start, "duration": new_end - new_start}
+                )
+            )
+        return kept
+
+    def cut_out_range(self, start_sec: float, duration_sec: float) -> None:
+        """Poista aikaväli [start_sec, start_sec+duration] aikajanalta."""
+        if duration_sec <= 0:
+            raise ValueError("duration_sec must be > 0")
+        total = self.timeline.total_duration()
+        if total <= 0:
+            raise ValueError("timeline is empty")
+        start = max(0.0, float(start_sec))
+        end = min(total, start + float(duration_sec))
+        if end <= start + 1e-9:
+            raise ValueError("cut range is empty or outside timeline")
+
+        spans = self.clip_spans()
+        self._checkpoint()
+        new_clips: list[Clip] = []
+
+        for i, cs, ce in spans:
+            clip = self.timeline.clips[i]
+            if ce <= start + 1e-9 or cs >= end - 1e-9:
+                new_clips.append(clip)
+                continue
+            if cs >= start - 1e-9 and ce <= end + 1e-9:
+                # Koko klippi poistetaan
+                continue
+
+            # Osittainen osuma
+            if cs < start and ce > end:
+                # Jätä alku ja loppu
+                left_local_end = (start - cs) * clip.speed
+                right_local_start = (end - cs) * clip.speed
+                left_out = clip.in_sec + left_local_end
+                right_in = clip.in_sec + right_local_start
+                left = clip.model_copy(
+                    update={
+                        "id": _new_id("clip"),
+                        "out_sec": left_out,
+                        "effects": self._effects_for_subclip(
+                            clip, 0.0, start - cs
+                        ),
+                    }
+                )
+                right = clip.model_copy(
+                    update={
+                        "id": _new_id("clip"),
+                        "in_sec": right_in,
+                        "effects": self._effects_for_subclip(
+                            clip, end - cs, clip.duration
+                        ),
+                    }
+                )
+                if left.out_sec > left.in_sec + 1e-9:
+                    new_clips.append(left)
+                if right.out_sec > right.in_sec + 1e-9:
+                    new_clips.append(right)
+            elif cs < start:
+                # Trimmaa loppu kohtaan start
+                local_end = (start - cs) * clip.speed
+                updated = clip.model_copy(
+                    update={
+                        "id": _new_id("clip"),
+                        "out_sec": clip.in_sec + local_end,
+                        "effects": self._effects_for_subclip(clip, 0.0, start - cs),
+                    }
+                )
+                if updated.out_sec > updated.in_sec + 1e-9:
+                    new_clips.append(updated)
+            else:
+                # Trimmaa alku kohtaan end
+                local_start = (end - cs) * clip.speed
+                updated = clip.model_copy(
+                    update={
+                        "id": _new_id("clip"),
+                        "in_sec": clip.in_sec + local_start,
+                        "effects": self._effects_for_subclip(
+                            clip, end - cs, clip.duration
+                        ),
+                    }
+                )
+                if updated.out_sec > updated.in_sec + 1e-9:
+                    new_clips.append(updated)
+
+        self.timeline.clips = new_clips
+        self.timeline.transitions = []
+        self.set_playhead(start)
+
+    def cut_at_playhead(self, duration_sec: float) -> None:
+        """Poista aikaväli nykyisestä playhead-kohdasta eteenpäin."""
+        self.cut_out_range(self.playhead_sec, duration_sec)
 
     def get_clip_thumbnail(self, index: int) -> Path:
         """Palauta klipin aloitusframen pikkukuva (1-pohjainen indeksi).

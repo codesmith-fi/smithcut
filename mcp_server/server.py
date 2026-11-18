@@ -214,6 +214,24 @@ def create_mcp_server(
     def redo() -> str:
         return _run("redo", {})
 
+    @server.tool(
+        name="cut_timeline_range",
+        description=(
+            "Remove a time range from the timeline. duration_sec is required. "
+            "If start_sec is omitted, cut starts at the current playhead marker. "
+            "Use for 'cut N seconds from the playhead' / "
+            "'Leikkaa timeline markkerin valitusta kohdasta N sekuntia pois'."
+        ),
+    )
+    def cut_timeline_range(
+        duration_sec: float,
+        start_sec: float | None = None,
+    ) -> str:
+        args: dict[str, Any] = {"duration_sec": duration_sec}
+        if start_sec is not None:
+            args["start_sec"] = start_sec
+        return _run("cut_timeline_range", args)
+
     # Testejä / agenttia varten: säilytä controller-viite
     server._cutsmith_editor = ctrl  # type: ignore[attr-defined]
     return server

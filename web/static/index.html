@@ -40,12 +40,34 @@
           aria-label="Raahaa videoita tai musiikkia tähän"
         >
           <video id="preview" controls playsinline preload="metadata"></video>
+          <img id="still-frame" class="still-frame" alt="" hidden />
           <div class="preview-empty" id="preview-empty">
             <p data-i18n="previewEmptyTitle">Tuo video aloittaaksesi</p>
             <span data-i18n="previewEmptyHint">Raahaa tiedosto tähän tai käytä Tuo tiedosto -painiketta</span>
           </div>
           <div class="zoom-toast" id="zoom-toast" hidden data-i18n="zoomToast">
             Zoomaus lisätään tähän kohtaan
+          </div>
+        </div>
+        <div class="scrubber" id="scrubber" hidden>
+          <div class="scrubber-meta">
+            <span class="scrubber-label" data-i18n="scrubberLabel">Aikajana</span>
+            <span class="scrubber-timecode" id="scrubber-timecode">00:00.0</span>
+          </div>
+          <div
+            class="scrubber-track"
+            id="scrubber-track"
+            role="slider"
+            tabindex="0"
+            aria-valuemin="0"
+            aria-valuemax="0"
+            aria-valuenow="0"
+            data-i18n-aria="scrubberAria"
+            aria-label="Aikajanan markkeri"
+          >
+            <div class="scrubber-blocks" id="scrubber-blocks"></div>
+            <div class="scrubber-ticks" id="scrubber-ticks"></div>
+            <div class="scrubber-playhead" id="scrubber-playhead"></div>
           </div>
         </div>
         <div class="preview-hint">

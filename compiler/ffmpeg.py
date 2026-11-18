@@ -686,12 +686,14 @@ def _render_with_progress(
     return str(output_path)
 
 
-def extract_clip_thumbnail(
+def extract_still_frame(
     source_path: Path,
     timestamp: float,
     output_path: Path,
+    *,
+    scale: str = "960:-1",
 ) -> Path:
-    """Poimi yksittäinen aloitusruutu JPEG-pikkukuvaksi (LC_ALL=C)."""
+    """Poimi yksittäinen still-JPEG lähdevideon aikakohdasta (LC_ALL=C)."""
     source_path = Path(source_path)
     output_path = Path(output_path)
     if not source_path.is_file():
@@ -713,9 +715,9 @@ def extract_clip_thumbnail(
         "-vframes",
         "1",
         "-vf",
-        "scale=160:-1",
+        f"scale={scale}",
         "-q:v",
-        "4",
+        "3",
         str(output_path),
     ]
     result = subprocess.run(
@@ -727,5 +729,16 @@ def extract_clip_thumbnail(
     )
     if result.returncode != 0 or not output_path.is_file():
         detail = format_ffmpeg_error(result.stderr or result.stdout or "")
-        raise RuntimeError(f"thumbnail extraction failed:\n{detail}")
+        raise RuntimeError(f"still frame extraction failed:\n{detail}")
     return output_path
+
+
+def extract_clip_thumbnail(
+    source_path: Path,
+    timestamp: float,
+    output_path: Path,
+) -> Path:
+    """Poimi yksittäinen aloitusruutu JPEG-pikkukuvaksi (LC_ALL=C)."""
+    return extract_still_frame(
+        source_path, timestamp, output_path, scale="160:-1"
+    )

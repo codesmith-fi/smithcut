@@ -70,6 +70,10 @@ class ChatRequest(BaseModel):
     lang: Literal["fi", "en"] = "fi"
 
 
+class PlayheadRequest(BaseModel):
+    sec: float = Field(ge=0)
+
+
 # ---------------------------------------------------------------------------
 # Apurit
 # ---------------------------------------------------------------------------
@@ -148,6 +152,51 @@ def create_app(
             "state": _state_payload(editor, lang=code),
             "progress": editor.get_progress(),
         }
+
+    @app.get("/api/timeline")
+    def api_timeline(lang: str = Query(default="fi")) -> dict[str, Any]:
+        """Aikajanan tila playhead mukaan lukien (UI + agentti)."""
+        code = _lang_from_request(lang)
+        editor = get_editor()
+        return {
+            "ok": True,
+            "state": _state_payload(editor, lang=code),
+        }
+
+    @app.post("/api/timeline/playhead", response_model=None)
+    def api_set_playhead(body: PlayheadRequest, lang: str = Query(default="fi")):
+        editor = get_editor()
+        code = _lang_from_request(lang)
+        try:
+            sec = editor.set_playhead(body.sec)
+            return {
+                "ok": True,
+                "playhead_sec": sec,
+                "state": _state_payload(editor, lang=code),
+            }
+        except (ValueError, IndexError) as exc:
+            return _error(exc)
+        except Exception as exc:  # noqa: BLE001
+            return _error(exc, status=500)
+
+    @app.get("/api/timeline/frame")
+    def api_timeline_frame(t: float = Query(..., ge=0)):
+        """Still-JPEG aikajanan kohdasta t (sekunteina)."""
+        editor = get_editor()
+        try:
+            path = editor.get_frame_at_time(t)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
+        return FileResponse(
+            path=path,
+            media_type="image/jpeg",
+            filename=path.name,
+            headers={"Cache-Control": "no-cache"},
+        )
 
     @app.get("/api/status")
     def api_status() -> dict[str, Any]:
