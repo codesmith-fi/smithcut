@@ -302,6 +302,54 @@ OLLAMA_TOOLS: list[dict[str, Any]] = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "remove_video_audio",
+            "description": (
+                "Mute/remove the video clips' own audio. Optionally keep the "
+                "extracted audio in the media pool as Audio track 1 "
+                "(Ääniraita 1). Use for 'Poista videosta ääniraita'."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "keep_in_pool": {
+                        "type": "boolean",
+                        "description": "Save extracted audio to the pool (default true).",
+                    },
+                },
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "attach_audio_track",
+            "description": (
+                "Attach a pooled audio track to the timeline as continuous "
+                "audio over all cuts/xfades. track_index is 1-based "
+                "(1 = Ääniraita 1). Use for 'Lisää ääniraita 1 videoon' / "
+                "'Lisää klippinauhasta ääniraita 1 videoon'."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "track_index": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "description": "1-based audio track index.",
+                    },
+                    "start_sec": {
+                        "type": "number",
+                        "description": "Offset into the audio file (default 0).",
+                    },
+                },
+                "required": [],
+            },
+        },
+    },
 ]
 
 
@@ -492,6 +540,20 @@ def execute_tool(
                 fade_sec=float(args.get("fade_sec") or 0.6),
             )
             return _dump([e.model_dump() for e in effects]), changed
+
+        if name == "remove_video_audio":
+            keep = args.get("keep_in_pool")
+            result = editor.remove_video_audio(
+                keep_in_pool=True if keep is None else bool(keep)
+            )
+            return _dump(result), changed
+
+        if name == "attach_audio_track":
+            track = editor.attach_audio_track(
+                track_index=int(args.get("track_index") or 1),
+                start_sec=float(args.get("start_sec") or 0.0),
+            )
+            return _dump(track), changed
 
         return json.dumps({"error": f"Unknown tool: {name}"}), False
     except Exception as exc:  # noqa: BLE001 – LLM tarvitsee selkeän virheen

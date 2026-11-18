@@ -14,12 +14,7 @@ def _env() -> dict[str, str]:
     return env
 
 
-def probe(path: str) -> dict[str, Any]:
-    """Lue videotiedoston kesto, resoluutio, FPS ja ääniraidan olemassaolo.
-
-    Palauttaa sanakirjan:
-      duration, width, height, fps, has_audio
-    """
+def _ffprobe_json(path: str) -> dict[str, Any]:
     cmd = [
         "ffprobe",
         "-v",
@@ -40,8 +35,16 @@ def probe(path: str) -> dict[str, Any]:
     if result.returncode != 0:
         detail = (result.stderr or result.stdout or "").strip()
         raise RuntimeError(f"ffprobe failed for {path!r}: {detail}")
+    return json.loads(result.stdout)
 
-    data = json.loads(result.stdout)
+
+def probe(path: str) -> dict[str, Any]:
+    """Lue videotiedoston kesto, resoluutio, FPS ja ääniraidan olemassaolo.
+
+    Palauttaa sanakirjan:
+      duration, width, height, fps, has_audio
+    """
+    data = _ffprobe_json(path)
     streams = data.get("streams") or []
     format_info = data.get("format") or {}
 
@@ -66,6 +69,31 @@ def probe(path: str) -> dict[str, Any]:
         "fps": fps,
         "has_audio": audio is not None,
     }
+
+
+def probe_audio(path: str) -> dict[str, Any]:
+    """Lue äänitiedoston kesto (video-streamia ei vaadita)."""
+    data = _ffprobe_json(path)
+    streams = data.get("streams") or []
+    format_info = data.get("format") or {}
+    audio = next((s for s in streams if s.get("codec_type") == "audio"), None)
+    if audio is None:
+        raise RuntimeError(f"no audio stream in {path!r}")
+
+    duration = 0.0
+    for candidate in (audio.get("duration"), format_info.get("duration")):
+        if candidate is None:
+            continue
+        try:
+            value = float(candidate)
+        except (TypeError, ValueError):
+            continue
+        if value > 0:
+            duration = value
+            break
+    if duration <= 0:
+        raise RuntimeError(f"could not determine audio duration for {path!r}")
+    return {"duration": duration, "has_audio": True}
 
 
 def _parse_fps(rate: str) -> float:

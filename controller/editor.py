@@ -9,11 +9,16 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-from compiler.ffmpeg import extract_clip_thumbnail, extract_still_frame
+from compiler.ffmpeg import (
+    extract_audio_track,
+    extract_clip_thumbnail,
+    extract_still_frame,
+)
 from compiler.ffmpeg import render as ffmpeg_render
-from compiler.ffprobe import probe
+from compiler.ffprobe import probe, probe_audio
 from model.history import HistoryManager
 from model.timeline import (
+    AudioTrack,
     BackgroundMusic,
     BlurEffect,
     Clip,
@@ -46,6 +51,9 @@ _SUMMARY_I18N: dict[str, dict[str, Any]] = {
         "effect_text": "Teksti",
         "effect_blur": "Blur",
         "bgm_on": "Taustamusiikki käytössä",
+        "audio_track": "Ääniraita {n}",
+        "video_audio_muted": "Videon oma ääni mykistetty",
+        "video_audio_on": "Videon oma ääni käytössä",
         "empty": "Aikajana on tyhjä – tuo video aloittaaksesi.",
         "description": (
             "Aikajanalla on {count} klippiä, kokonaiskesto {duration} s, "
@@ -64,6 +72,9 @@ _SUMMARY_I18N: dict[str, dict[str, Any]] = {
         "effect_text": "Text",
         "effect_blur": "Blur",
         "bgm_on": "Background music on",
+        "audio_track": "Audio track {n}",
+        "video_audio_muted": "Video audio muted",
+        "video_audio_on": "Video audio on",
         "empty": "Timeline is empty — import a video to get started.",
         "description": (
             "Timeline has {count} clip(s), total duration {duration} s, "
@@ -212,11 +223,22 @@ class EditorController:
         if bgm is not None and not Path(bgm.path).is_file():
             bgm = None
 
+        kept_audio = [
+            t for t in timeline.audio_tracks if Path(t.path).is_file()
+        ]
+        active_id = timeline.active_audio_track_id
+        if active_id and not any(t.id == active_id for t in kept_audio):
+            active_id = None
+
         self.timeline = Timeline(
             sources=kept_sources,
             clips=kept_clips,
             transitions=kept_transitions,
             bgm=bgm,
+            mute_video_audio=timeline.mute_video_audio,
+            audio_tracks=kept_audio,
+            active_audio_track_id=active_id,
+            active_audio_start_sec=timeline.active_audio_start_sec,
             output_fps=timeline.output_fps,
         )
         try:
@@ -600,7 +622,119 @@ class EditorController:
         )
         self._checkpoint()
         self.timeline.bgm = music
+        # Pidä myös ääniraitapoolissa (Ääniraita N)
+        if not any(t.path == path for t in self.timeline.audio_tracks):
+            try:
+                meta = probe_audio(path)
+                dur = float(meta["duration"])
+            except Exception:  # noqa: BLE001
+                dur = 1.0
+            self.timeline.audio_tracks.append(
+                AudioTrack(
+                    id=_new_id("aud"),
+                    path=path,
+                    duration=max(dur, 0.05),
+                    origin="imported",
+                )
+            )
+        self._flush_persist()
         return music
+
+    def remove_video_audio(self, keep_in_pool: bool = True) -> dict[str, Any]:
+        """Mykistä videoklippien oma ääni; tallenna halutessa pooliin Ääniraita N."""
+        if not self.timeline.clips:
+            raise ValueError("timeline has no clips")
+
+        self._checkpoint()
+        extracted: AudioTrack | None = None
+
+        if keep_in_pool:
+            # Irrota ääni ensimmäisestä lähteestä jolla on audio (jos ei jo poolissa)
+            for clip in self.timeline.clips:
+                source = self.timeline.sources.get(clip.source_id)
+                if source is None or not source.has_audio:
+                    continue
+                already = any(
+                    t.origin == "extracted" and t.source_video_id == source.id
+                    for t in self.timeline.audio_tracks
+                )
+                if already:
+                    break
+                audio_dir = Path(self.workspace) / "audio"
+                audio_dir.mkdir(parents=True, exist_ok=True)
+                out = audio_dir / f"track_{_new_id('aud')}.m4a"
+                try:
+                    extract_audio_track(Path(source.path), out)
+                except Exception as exc:  # noqa: BLE001
+                    raise RuntimeError(
+                        f"failed to extract audio from video: {exc}"
+                    ) from exc
+                meta = probe_audio(str(out))
+                extracted = AudioTrack(
+                    id=_new_id("aud"),
+                    path=str(out.resolve()),
+                    duration=float(meta["duration"]),
+                    origin="extracted",
+                    source_video_id=source.id,
+                )
+                self.timeline.audio_tracks.append(extracted)
+                break
+
+        self.timeline.mute_video_audio = True
+        self._flush_persist()
+        return {
+            "mute_video_audio": True,
+            "extracted_track_id": extracted.id if extracted else None,
+            "audio_track_count": len(self.timeline.audio_tracks),
+        }
+
+    def attach_audio_track(
+        self,
+        track_index: int = 1,
+        start_sec: float = 0.0,
+    ) -> AudioTrack:
+        """Liitä 1-pohjainen Ääniraita N aikajanalle katkeamattomaksi ääneksi."""
+        if track_index < 1:
+            raise ValueError(
+                f"track_index must be 1-based (first audio track is 1), got {track_index}"
+            )
+        if track_index > len(self.timeline.audio_tracks):
+            raise IndexError(
+                f"audio track {track_index} not found "
+                f"(have {len(self.timeline.audio_tracks)})"
+            )
+        track = self.timeline.audio_tracks[track_index - 1]
+        if not Path(track.path).is_file():
+            raise FileNotFoundError(f"audio track file missing: {track.path}")
+        if start_sec < 0:
+            raise ValueError("start_sec must be >= 0")
+
+        self._checkpoint()
+        self.timeline.active_audio_track_id = track.id
+        self.timeline.active_audio_start_sec = float(start_sec)
+        # Pool-raidan käyttö tarkoittaa että klippiääntä ei käytetä
+        self.timeline.mute_video_audio = True
+        self._flush_persist()
+        return track
+
+    def add_audio_file(self, file_path: str) -> AudioTrack:
+        """Lisää tuotu äänitiedosto pooliin (Ääniraita N)."""
+        path = Path(file_path).resolve()
+        if not path.is_file():
+            raise FileNotFoundError(f"audio file not found: {path}")
+        meta = probe_audio(str(path))
+        track = AudioTrack(
+            id=_new_id("aud"),
+            path=str(path),
+            duration=float(meta["duration"]),
+            origin="imported",
+        )
+        if track.duration <= 0:
+            raise ValueError("audio duration must be > 0")
+        self._checkpoint()
+        self.timeline.audio_tracks.append(track)
+        self._flush_persist()
+        return track
 
     def undo(self) -> bool:
         previous = self.history.undo(self.timeline)
@@ -723,6 +857,21 @@ class EditorController:
                 "label": L["bgm_on"],
             }
 
+        active_id = self.timeline.active_audio_track_id
+        audio_tracks_summary = []
+        for i, track in enumerate(self.timeline.audio_tracks):
+            audio_tracks_summary.append(
+                {
+                    "index": i + 1,
+                    "id": track.id,
+                    "path": track.path,
+                    "duration_sec": round(track.duration, 3),
+                    "origin": track.origin,
+                    "label": L["audio_track"].format(n=i + 1),
+                    "active": track.id == active_id,
+                }
+            )
+
         total = round(self.timeline.total_duration(), 3)
         n_clips = len(self.timeline.clips)
         if n_clips == 0:
@@ -754,6 +903,18 @@ class EditorController:
             "transitions": transitions_summary,
             "sources": sources_summary,
             "bgm": bgm,
+            "mute_video_audio": self.timeline.mute_video_audio,
+            "video_audio_status": (
+                L["video_audio_muted"]
+                if self.timeline.mute_video_audio
+                else L["video_audio_on"]
+            ),
+            "audio_tracks": audio_tracks_summary,
+            "active_audio_track_index": next(
+                (t["index"] for t in audio_tracks_summary if t["active"]),
+                None,
+            ),
+            "active_audio_start_sec": self.timeline.active_audio_start_sec,
             "total_duration_sec": total,
             "output_fps": self.timeline.output_fps,
             "playhead_sec": round(self.playhead_sec, 3),

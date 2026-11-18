@@ -276,6 +276,32 @@ def create_mcp_server(
             {"max_sigma": max_sigma, "fade_sec": fade_sec},
         )
 
+    @server.tool(
+        name="remove_video_audio",
+        description=(
+            "Mute video clips' own audio; optionally keep extracted audio as "
+            "Ääniraita 1 in the pool. Use for 'Poista videosta ääniraita'."
+        ),
+    )
+    def remove_video_audio(keep_in_pool: bool = True) -> str:
+        return _run("remove_video_audio", {"keep_in_pool": keep_in_pool})
+
+    @server.tool(
+        name="attach_audio_track",
+        description=(
+            "Attach pooled audio track (1-based: 1 = Ääniraita 1) as continuous "
+            "timeline audio. Use for 'Lisää ääniraita 1 videoon'."
+        ),
+    )
+    def attach_audio_track(
+        track_index: int = 1,
+        start_sec: float = 0.0,
+    ) -> str:
+        return _run(
+            "attach_audio_track",
+            {"track_index": track_index, "start_sec": start_sec},
+        )
+
     # Testejä / agenttia varten: säilytä controller-viite
     server._cutsmith_editor = ctrl  # type: ignore[attr-defined]
     return server

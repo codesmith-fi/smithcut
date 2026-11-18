@@ -55,6 +55,9 @@ const els = {
   dropzone: document.getElementById("dropzone"),
   fileInput: document.getElementById("file-input"),
   libraryMeta: document.getElementById("library-meta"),
+  audioPanel: document.getElementById("audio-panel"),
+  audioStatus: document.getElementById("audio-status"),
+  audioTrackList: document.getElementById("audio-track-list"),
   clipStrip: document.getElementById("clip-strip"),
   timelineDuration: document.getElementById("timeline-duration"),
   commandForm: document.getElementById("command-form"),
@@ -519,6 +522,7 @@ function applyState(summary) {
     state.selectionEnd =
       summary.selection_end_sec == null ? null : Number(summary.selection_end_sec);
   }
+  renderAudioTracks(summary);
   renderClipStrip();
   renderScrubber();
   if (!state._skipPreviewUpdate) {
@@ -611,6 +615,38 @@ function updatePreview(url, { forceReload = false } = {}) {
     },
     { once: true }
   );
+}
+
+function renderAudioTracks(summary) {
+  if (!els.audioPanel || !els.audioTrackList || !els.audioStatus) return;
+  const tracks = summary?.audio_tracks || [];
+  const muted = Boolean(summary?.mute_video_audio);
+  const activeIndex = summary?.active_audio_track_index ?? null;
+
+  let status = muted ? t("videoAudioMuted") : t("videoAudioOn");
+  if (activeIndex != null) {
+    status += t("audioAttached", { n: activeIndex });
+  }
+  els.audioStatus.textContent = status;
+
+  els.audioTrackList.innerHTML = "";
+  const showPanel = tracks.length > 0 || muted;
+  els.audioPanel.hidden = !showPanel;
+  if (!tracks.length) return;
+
+  tracks.forEach((track) => {
+    const li = document.createElement("li");
+    li.className = "audio-track-item" + (track.active ? " is-active" : "");
+    const originKey =
+      track.origin === "extracted" ? "audioTrackExtracted" : "audioTrackImported";
+    const stateKey = track.active ? "audioTrackActive" : "audioTrackIdle";
+    const label = track.label || t("audioTrackLabel", { n: track.index });
+    li.innerHTML = `
+      <span class="track-label">${label}</span>
+      <span class="track-meta">${t(originKey)} · ${t(stateKey)} · ${formatSeconds(track.duration_sec)}</span>
+    `;
+    els.audioTrackList.appendChild(li);
+  });
 }
 
 function renderClipStrip() {

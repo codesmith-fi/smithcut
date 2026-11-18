@@ -118,12 +118,40 @@ class BackgroundMusic(BaseModel):
     fade_out_sec: float = Field(default=2.0, ge=0.0)
 
 
+class AudioTrack(BaseModel):
+    """Itsenäinen ääniraita (tuotu tai videosta irrotettu)."""
+
+    id: str
+    path: str
+    duration: float = Field(gt=0)
+    origin: Literal["extracted", "imported"] = "imported"
+    source_video_id: Optional[str] = None
+
+
 class Timeline(BaseModel):
     sources: dict[str, VideoSource] = Field(default_factory=dict)
     clips: list[Clip] = Field(default_factory=list)
     transitions: list[Transition] = Field(default_factory=list)
     bgm: Optional[BackgroundMusic] = None
+    # Kun True, videoklippien omaa ääntä ei käytetä (eikä acrossfadea)
+    mute_video_audio: bool = False
+    # Materiaalipoolin ääniraidat (Ääniraita 1, 2, …)
+    audio_tracks: list[AudioTrack] = Field(default_factory=list)
+    # Aktiivinen pool-ääniraita (id) – soi katkeamattomana koko aikajanan yli
+    active_audio_track_id: Optional[str] = None
+    active_audio_start_sec: float = Field(default=0.0, ge=0.0)
     output_fps: int = Field(default=60, gt=0)
+
+    def audio_track_by_id(self, track_id: str) -> AudioTrack | None:
+        for track in self.audio_tracks:
+            if track.id == track_id:
+                return track
+        return None
+
+    def active_audio_track(self) -> AudioTrack | None:
+        if not self.active_audio_track_id:
+            return None
+        return self.audio_track_by_id(self.active_audio_track_id)
 
     def clip_duration(self, index: int) -> float:
         return self.clips[index].duration

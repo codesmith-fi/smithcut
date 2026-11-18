@@ -460,6 +460,17 @@ def _clip_audio_filter(
     return ",".join(parts) + f"[{out_label}]"
 
 
+def _extra_audio_inputs(timeline: Timeline) -> list[str]:
+    """Lisä-inputit filter/command -rakenteelle (aktiivinen raita, BGM)."""
+    extras: list[str] = []
+    active = timeline.active_audio_track()
+    if active is not None:
+        extras.append(active.path)
+    if timeline.bgm is not None:
+        extras.append(timeline.bgm.path)
+    return extras
+
+
 def build_filter_complex(timeline: Timeline, mode: RenderMode | str = "preview") -> str:
     """Käännä Timeline deterministiseksi filter_complex -merkkijonoksi."""
     validate_timeline(timeline)
@@ -468,6 +479,12 @@ def build_filter_complex(timeline: Timeline, mode: RenderMode | str = "preview")
     # Esikatselu: hieman alempi FPS nopeuttaa pitkiä videoita
     fps = min(timeline.output_fps, 30) if profile == "preview" else timeline.output_fps
     clip_paths = _clip_input_paths(timeline)
+    n_clip_inputs = len(clip_paths)
+
+    active_track = timeline.active_audio_track()
+    # Katkeamaton pool-ääniraita korvaa klippiäänen; mute ohittaa klippiäänen
+    use_continuous = active_track is not None
+    use_clip_audio = (not timeline.mute_video_audio) and (not use_continuous)
 
     lines: list[str] = []
     video_labels: list[str] = []
@@ -477,28 +494,27 @@ def build_filter_complex(timeline: Timeline, mode: RenderMode | str = "preview")
         source = timeline.sources[clip.source_id]
         inp = i  # yksi -i per klippi
         v_out = f"v{i}"
-        a_out = f"a{i}"
         lines.append(
             _clip_video_filter(
                 clip, inp, v_out, width, height, fps, profile=profile
             )
         )
-        lines.append(_clip_audio_filter(clip, source, inp, a_out))
         video_labels.append(v_out)
-        audio_labels.append(a_out)
+        if use_clip_audio:
+            a_out = f"a{i}"
+            lines.append(_clip_audio_filter(clip, source, inp, a_out))
+            audio_labels.append(a_out)
 
     current_v = video_labels[0]
-    current_a = audio_labels[0]
+    current_a = audio_labels[0] if use_clip_audio else None
     # Kertyvä ulostulon kesto (ensimmäisen osan pituus ennen seuraavaa xfadea)
     accumulated = float(timeline.clips[0].duration)
     n_clips = len(timeline.clips)
 
     for i in range(1, n_clips):
         next_v = video_labels[i]
-        next_a = audio_labels[i]
         transition = timeline.transition_after(i - 1)
         out_v = f"vx{i}"
-        out_a = f"ax{i}"
 
         if transition is not None:
             left_dur = timeline.clips[i - 1].duration
@@ -517,29 +533,60 @@ def build_filter_complex(timeline: Timeline, mode: RenderMode | str = "preview")
                 f"[{current_v}][{next_v}]xfade=transition={transition.type}"
                 f":duration={dur:.6f}:offset={xfade_offset:.6f}[{out_v}]"
             )
-            lines.append(
-                f"[{current_a}][{next_a}]acrossfade=d={dur:.6f}:c1=tri:c2=tri[{out_a}]"
-            )
+            if use_clip_audio:
+                next_a = audio_labels[i]
+                out_a = f"ax{i}"
+                lines.append(
+                    f"[{current_a}][{next_a}]acrossfade=d={dur:.6f}:c1=tri:c2=tri[{out_a}]"
+                )
+                current_a = out_a
             accumulated = max(0.0, accumulated + right_dur - dur)
         else:
             lines.append(f"[{current_v}][{next_v}]concat=n=2:v=1:a=0[{out_v}]")
-            lines.append(f"[{current_a}][{next_a}]concat=n=2:v=0:a=1[{out_a}]")
+            if use_clip_audio:
+                next_a = audio_labels[i]
+                out_a = f"ax{i}"
+                lines.append(f"[{current_a}][{next_a}]concat=n=2:v=0:a=1[{out_a}]")
+                current_a = out_a
             accumulated = accumulated + timeline.clips[i].duration
 
         current_v = out_v
-        current_a = out_a
 
     # Lopulliset videotunnisteet
     if current_v != "vout":
         lines.append(f"[{current_v}]null[vout]")
 
     total = timeline.total_duration()
+    next_extra = n_clip_inputs
+
+    if use_continuous:
+        assert active_track is not None
+        track_index = next_extra
+        next_extra += 1
+        start = max(0.0, float(timeline.active_audio_start_sec))
+        bed_dur = max(total, 0.05)
+        end = start + bed_dur
+        # Katkeamaton bed: aresample + atrim täsmälleen videon kestoon (apad jos lyhyempi)
+        lines.append(
+            f"[{track_index}:a]atrim=start={start:.6f}:end={end:.6f},"
+            f"asetpts=PTS-STARTPTS,"
+            f"aformat=sample_fmts=fltp:channel_layouts=stereo:sample_rates=48000,"
+            f"aresample=48000,apad=whole_dur={bed_dur:.6f},"
+            f"atrim=0:{bed_dur:.6f},asetpts=PTS-STARTPTS[a_bed]"
+        )
+        bed_label = "a_bed"
+    elif use_clip_audio:
+        bed_label = current_a or "a0"
+    else:
+        # Mykistetty eikä pool-raidasta → hiljaisuus (selaintoistin tarvitsee äänen)
+        lines.append(_silence_audio_filter(total if total > 0 else 0.05, "a_bed"))
+        bed_label = "a_bed"
 
     if timeline.bgm is not None:
         bgm = timeline.bgm
-        bgm_index = len(clip_paths)
+        bgm_index = next_extra
         fade_start = max(total - bgm.fade_out_sec, 0.0)
-        lines.append(f"[{current_a}]volume={bgm.sfx_volume}[a_sfx]")
+        lines.append(f"[{bed_label}]volume={bgm.sfx_volume}[a_sfx]")
         bgm_parts = [
             f"[{bgm_index}:a]atrim=0:{total:.6f}",
             "asetpts=PTS-STARTPTS",
@@ -555,8 +602,8 @@ def build_filter_complex(timeline: Timeline, mode: RenderMode | str = "preview")
         lines.append(
             "[a_sfx][a_bgm]amix=inputs=2:duration=first:dropout_transition=0[aout]"
         )
-    elif current_a != "aout":
-        lines.append(f"[{current_a}]anull[aout]")
+    elif bed_label != "aout":
+        lines.append(f"[{bed_label}]anull[aout]")
 
     return ";\n".join(lines)
 
@@ -604,8 +651,8 @@ def build_command(
     cmd: list[str] = ["ffmpeg", "-y", "-hide_banner"]
     for path in clip_paths:
         cmd.extend(["-i", path])
-    if timeline.bgm is not None:
-        cmd.extend(["-i", timeline.bgm.path])
+    for path in _extra_audio_inputs(timeline):
+        cmd.extend(["-i", path])
 
     cmd.extend(
         [
@@ -822,6 +869,49 @@ def extract_still_frame(
     if result.returncode != 0 or not output_path.is_file():
         detail = format_ffmpeg_error(result.stderr or result.stdout or "")
         raise RuntimeError(f"still frame extraction failed:\n{detail}")
+    return output_path
+
+
+def extract_audio_track(
+    source_path: Path,
+    output_path: Path,
+) -> Path:
+    """Irrota ääniraita lähdevideosta AAC-tiedostoksi (LC_ALL=C)."""
+    source_path = Path(source_path)
+    output_path = Path(output_path)
+    if not source_path.is_file():
+        raise FileNotFoundError(f"video source not found: {source_path}")
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    cmd = [
+        "ffmpeg",
+        "-y",
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-i",
+        str(source_path),
+        "-vn",
+        "-acodec",
+        "aac",
+        "-b:a",
+        "192k",
+        "-ar",
+        "48000",
+        "-ac",
+        "2",
+        str(output_path),
+    ]
+    result = subprocess.run(
+        cmd,
+        capture_output=True,
+        text=True,
+        env=_env(),
+        check=False,
+    )
+    if result.returncode != 0 or not output_path.is_file():
+        detail = format_ffmpeg_error(result.stderr or result.stdout or "")
+        raise RuntimeError(f"audio extraction failed:\n{detail}")
     return output_path
 
 

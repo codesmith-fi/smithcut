@@ -2,6 +2,7 @@
 
 from model.history import HistoryManager
 from model.timeline import (
+    AudioTrack,
     BackgroundMusic,
     BlurEffect,
     Clip,
@@ -13,6 +14,7 @@ from model.timeline import (
 )
 
 __all__ = [
+    "AudioTrack",
     "BackgroundMusic",
     "BlurEffect",
     "Clip",
