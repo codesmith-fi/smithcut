@@ -238,19 +238,25 @@ def create_mcp_server(
     @server.tool(
         name="apply_crossfade_to_selection",
         description=(
-            "Apply a crossfade on the clip seam inside the painted selection. "
-            "Duration defaults to the selection length (capped). "
+            "Apply a crossfade between two clips. "
+            "clip_index is 0-based (0 = seam between clip 1 and 2). "
+            "Pass duration_sec + clip_index for verbal requests without a "
+            "painted selection. Duration defaults to selection length when "
+            "a range is painted. "
             "Use for 'Tee valitulle alueelle crossfade' / "
-            "'Apply a crossfade to the selected range'."
+            "'Valitse clip1 lopusta ja clip 2 alusta 5 sekuntia ja tee crossfade'."
         ),
     )
     def apply_crossfade_to_selection(
         transition_type: str = "fade",
         duration_sec: float | None = None,
+        clip_index: int | None = None,
     ) -> str:
         args: dict[str, Any] = {"transition_type": transition_type}
         if duration_sec is not None:
             args["duration_sec"] = duration_sec
+        if clip_index is not None:
+            args["clip_index"] = clip_index
         return _run("apply_crossfade_to_selection", args)
 
     @server.tool(

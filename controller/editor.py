@@ -1086,28 +1086,82 @@ class EditorController:
         self,
         transition_type: str = "fade",
         duration_sec: float | None = None,
+        clip_index: int | None = None,
     ) -> Transition:
-        """Aseta crossfade valitun alueen ylittämälle klippisaumalle."""
-        if not self.has_selection():
-            raise ValueError("no active selection range")
-        boundary = self.selection_boundary_index()
-        if boundary is None:
+        """Aseta crossfade saumaan.
+
+        Parametrit
+        ----------
+        clip_index:
+            0-pohjainen indeksi ensimmäiselle klipille (sauma clip_index →
+            clip_index+1). Jos None, käytetään valinnan ylittämää saumaa
+            tai ainoaa saumaa kun aikajanalla on tasan kaksi klippiä.
+        duration_sec:
+            Siirtymän kesto. Jos None ja valinta on aktiivinen, käytetään
+            valinnan pituutta.
+        """
+        n_clips = len(self.timeline.clips)
+        if n_clips < 2:
+            raise ValueError("crossfade requires at least two clips")
+
+        boundary: int | None = None
+        requested: float | None = (
+            float(duration_sec) if duration_sec is not None else None
+        )
+
+        if clip_index is not None:
+            boundary = int(clip_index)
+            if boundary < 0 or boundary >= n_clips - 1:
+                raise IndexError(
+                    f"clip_index {boundary} requires a following clip "
+                    f"(valid 0..{n_clips - 2})"
+                )
+        elif self.has_selection():
+            boundary = self.selection_boundary_index()
+            if boundary is None:
+                raise ValueError(
+                    "selection does not span a clip boundary; "
+                    "paint a range across two adjacent clips"
+                )
+            if requested is None:
+                sel_s = float(self.selection_start_sec)  # type: ignore[arg-type]
+                sel_e = float(self.selection_end_sec)  # type: ignore[arg-type]
+                requested = sel_e - sel_s
+        elif n_clips == 2:
+            # Ainoa sauma – sallitaan ilman hiirivalintaa kun kesto annettu
+            boundary = 0
+        else:
             raise ValueError(
-                "selection does not span a clip boundary; "
-                "paint a range across two adjacent clips"
+                "no active selection and clip_index not provided; "
+                "paint a range, pass clip_index, or use a two-clip timeline"
             )
 
+        if requested is None:
+            raise ValueError(
+                "duration_sec is required when there is no active selection"
+            )
+
+        assert boundary is not None
         left = self.timeline.clips[boundary]
         right = self.timeline.clips[boundary + 1]
-        sel_s = float(self.selection_start_sec)  # type: ignore[arg-type]
-        sel_e = float(self.selection_end_sec)  # type: ignore[arg-type]
-        requested = float(duration_sec) if duration_sec is not None else (sel_e - sel_s)
-        # xfade vaatii duration < molemmat klipit; pidä pieni marginaali
+        # xfade vaatii duration < molemmat klipit; max 90 % lyhyemmästä
         max_dur = min(left.duration, right.duration) * 0.9
         max_safe = min(left.duration, right.duration) - 1e-3
         duration = min(max(requested, self.SELECTION_MIN_SEC), max_dur, max_safe)
         if duration <= self.SELECTION_MIN_SEC:
             raise ValueError("computed crossfade duration is too short")
+
+        # Näytä sauman ympärille limitys valintana (UI + agenttikuittaus)
+        spans = self.clip_spans()
+        _i, left_start, left_end = spans[boundary]
+        half = duration / 2.0
+        sel_start = max(left_start, left_end - half)
+        sel_end = min(spans[boundary + 1][2], left_end + half)
+        # Jos sauma ei ole limitetty vielä, left_end == next start
+        if sel_end - sel_start < duration - 1e-6:
+            sel_start = max(0.0, left_end - half)
+            sel_end = sel_start + duration
+        self.set_selection(sel_start, sel_end)
 
         transition = self.set_transition(boundary, transition_type, duration)
         self.clear_selection()

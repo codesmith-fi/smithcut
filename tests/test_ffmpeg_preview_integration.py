@@ -9,7 +9,8 @@ from pathlib import Path
 import pytest
 
 from compiler.ffmpeg import compile_timeline, format_ffmpeg_error
-from model.timeline import Clip, TextEffect, Timeline, VideoSource, ZoomEffect
+from compiler.ffprobe import probe
+from model.timeline import Clip, TextEffect, Timeline, Transition, VideoSource, ZoomEffect
 
 ffmpeg_bin = shutil.which("ffmpeg")
 pytestmark = pytest.mark.skipif(ffmpeg_bin is None, reason="ffmpeg not installed")
@@ -131,3 +132,97 @@ def test_compile_timeline_preview_with_effects_and_trim(tmp_path: Path):
     result = compile_timeline(tl, out, mode="preview")
     assert Path(result).is_file()
     assert Path(result).stat().st_size > 1000
+
+
+def test_compile_timeline_xfade_fade_is_valid_mp4(tmp_path: Path):
+    """Aito FFmpeg: 2 klippiä + fade-xfade → validi MP4, oikea kesto, videovirta."""
+    src = tmp_path / "src.mp4"
+    out = tmp_path / "xfade_preview.mp4"
+    _make_testsrc(src, duration=8.0, size="1280x720")
+
+    clip1_dur = 3.0
+    clip2_dur = 3.0
+    fade_dur = 1.0
+    tl = Timeline(
+        sources={
+            "src1": VideoSource(
+                id="src1",
+                path=str(src),
+                duration=8.0,
+                width=1280,
+                height=720,
+                fps=30.0,
+                has_audio=True,
+            )
+        },
+        clips=[
+            Clip(id="c0", source_id="src1", in_sec=0.0, out_sec=clip1_dur),
+            Clip(id="c1", source_id="src1", in_sec=3.0, out_sec=3.0 + clip2_dur),
+        ],
+        transitions=[
+            Transition(after_clip_index=0, type="fade", duration=fade_dur),
+        ],
+        output_fps=30,
+    )
+
+    result = compile_timeline(tl, out, mode="preview")
+    assert Path(result).is_file()
+    assert Path(result).stat().st_size > 1000
+
+    meta = probe(Path(result))
+    expected = clip1_dur + clip2_dur - fade_dur
+    assert meta["duration"] == pytest.approx(expected, abs=0.35)
+    assert meta["width"] > 0 and meta["height"] > 0
+    assert meta["fps"] > 0
+
+
+def test_compile_timeline_xfade_without_audio_source(tmp_path: Path):
+    """xfade toimii myös kun lähteellä ei ole ääniraitaa (hiljaisuus + acrossfade)."""
+    src = tmp_path / "silent.mp4"
+    out = tmp_path / "xfade_silent.mp4"
+    cmd = [
+        "ffmpeg",
+        "-y",
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-f",
+        "lavfi",
+        "-i",
+        "testsrc=size=640x360:rate=30:duration=5",
+        "-c:v",
+        "libx264",
+        "-preset",
+        "ultrafast",
+        "-pix_fmt",
+        "yuv420p",
+        "-an",
+        str(src),
+    ]
+    result = subprocess.run(cmd, capture_output=True, text=True, check=False)
+    assert result.returncode == 0, result.stderr
+
+    tl = Timeline(
+        sources={
+            "src1": VideoSource(
+                id="src1",
+                path=str(src),
+                duration=5.0,
+                width=640,
+                height=360,
+                fps=30.0,
+                has_audio=False,
+            )
+        },
+        clips=[
+            Clip(id="c0", source_id="src1", in_sec=0.0, out_sec=2.5),
+            Clip(id="c1", source_id="src1", in_sec=2.5, out_sec=5.0),
+        ],
+        transitions=[Transition(after_clip_index=0, type="fade", duration=0.5)],
+        output_fps=30,
+    )
+    path = compile_timeline(tl, out, mode="preview")
+    assert Path(path).is_file()
+    meta = probe(Path(path))
+    assert meta["duration"] == pytest.approx(4.5, abs=0.4)
+    assert meta["width"] > 0

@@ -25,6 +25,7 @@ const state = {
   selectMode: null, // "paint" | "start" | "end"
   selectionThrottleTimer: null,
   lastPostedSelection: null,
+  lastReply: null,
 };
 
 const SCRUB_THROTTLE_MS = 100;
@@ -414,6 +415,28 @@ function secFromPointerEvent(e) {
   return clampPlayhead(ratio * totalDuration());
 }
 
+function clipLayoutSpans() {
+  /** Klippien sijainnit siirtymälimityksellä (sama logiikka kuin total_duration). */
+  const clips = state.summary?.clips || [];
+  const transitions = state.summary?.transitions || [];
+  const spans = [];
+  let cursor = 0;
+  clips.forEach((clip, i) => {
+    const dur = Number(clip.duration_sec) || 0;
+    const start =
+      clip.timeline_start_sec != null ? Number(clip.timeline_start_sec) : cursor;
+    const end =
+      clip.timeline_end_sec != null ? Number(clip.timeline_end_sec) : start + dur;
+    spans.push({ clip, start, end, index: clip.index });
+    cursor = end;
+    const tr = transitions.find((item) => item.after_clip === clip.index);
+    if (tr && i < clips.length - 1) {
+      cursor -= Number(tr.duration_sec) || 0;
+    }
+  });
+  return spans;
+}
+
 function renderScrubber() {
   if (!els.scrubber || !els.scrubberBlocks || !els.scrubberTicks) return;
   const clips = state.summary?.clips || [];
@@ -427,13 +450,14 @@ function renderScrubber() {
     return;
   }
 
-  clips.forEach((clip) => {
-    const start = Number(clip.timeline_start_sec ?? 0);
-    const end = Number(clip.timeline_end_sec ?? start + (clip.duration_sec || 0));
+  const spans = clipLayoutSpans();
+  spans.forEach(({ clip, start, end }, i) => {
     const left = (start / total) * 100;
     const width = Math.max(0.4, ((end - start) / total) * 100);
     const block = document.createElement("div");
-    block.className = "scrubber-block";
+    const overlapsPrev = i > 0 && start < spans[i - 1].end - 1e-6;
+    block.className =
+      "scrubber-block" + (overlapsPrev ? " is-overlap" : "");
     block.style.left = `${left}%`;
     block.style.width = `${width}%`;
     const label = document.createElement("span");
@@ -497,7 +521,14 @@ function applyState(summary) {
   }
   renderClipStrip();
   renderScrubber();
-  updatePreview(resolvePreviewUrl(summary));
+  if (!state._skipPreviewUpdate) {
+    updatePreview(resolvePreviewUrl(summary));
+  }
+  // Säilytä chat-kuittaus tilapäivityksen yli
+  if (state.lastReply && els.commandReply) {
+    els.commandReply.hidden = false;
+    els.commandReply.textContent = state.lastReply;
+  }
 }
 
 function resolvePreviewUrl(summary) {
@@ -508,24 +539,27 @@ function resolvePreviewUrl(summary) {
   return summary.sources?.find((s) => s.url)?.url || null;
 }
 
-function updatePreview(url) {
+function updatePreview(url, { forceReload = false } = {}) {
   const resolved = url || resolvePreviewUrl(state.summary);
   const hasPreview = Boolean(resolved);
   els.previewStage.classList.toggle("is-empty", !hasPreview);
   els.preview.controls = true;
   els.preview.preload = "metadata";
 
+  // Still ei saa estää natiivia Play-painiketta renderöinnin jälkeen
+  if (!isActivelyScrubbing()) {
+    setStillMode(false);
+    if (els.stillFrame) {
+      els.stillFrame.hidden = true;
+      els.stillFrame.removeAttribute("src");
+    }
+  }
+
   if (!hasPreview) {
     els.preview.removeAttribute("src");
     els.preview.removeAttribute("poster");
     els.preview.load();
-    setStillMode(false);
     return;
-  }
-
-  // Älä peitä soittimia stillillä latauksen yhteydessä
-  if (!isActivelyScrubbing()) {
-    setStillMode(false);
   }
 
   const base = String(resolved).split("?")[0];
@@ -533,8 +567,13 @@ function updatePreview(url) {
   const resume = state.playheadSec || els.preview.currentTime || 0;
   const wasPlaying = !els.preview.paused && !isActivelyScrubbing();
 
-  // Sama lähde: vain seek, ei turhaa reloadia (vältä musta välähdys)
-  if (currentBase && currentBase === base && els.preview.readyState >= 1) {
+  // Sama URL ilman forceReload: vain seek (vältä musta välähdys)
+  if (
+    !forceReload &&
+    currentBase &&
+    currentBase === base &&
+    els.preview.readyState >= 1
+  ) {
     try {
       els.preview.currentTime = Math.min(resume, els.preview.duration || resume);
     } catch {
@@ -544,9 +583,7 @@ function updatePreview(url) {
   }
 
   const next = `${base}?t=${Date.now()}`;
-  els.preview.poster = `/api/timeline/frame?t=${encodeURIComponent(
-    Number(resume || 0).toFixed(3)
-  )}`;
+  els.preview.removeAttribute("poster");
   els.preview.src = next;
   els.preview.load();
   els.preview.addEventListener(
@@ -560,9 +597,7 @@ function updatePreview(url) {
       } catch {
         /* ignore seek errors */
       }
-      if (!isActivelyScrubbing()) {
-        setStillMode(false);
-      }
+      setStillMode(false);
       if (wasPlaying) {
         els.preview.play().catch(() => {});
       }
@@ -572,10 +607,7 @@ function updatePreview(url) {
   els.preview.addEventListener(
     "loadeddata",
     () => {
-      // Ensimmäinen ruutu + kontrollipalkki piirtyvät heti
-      if (!isActivelyScrubbing()) {
-        setStillMode(false);
-      }
+      setStillMode(false);
     },
     { once: true }
   );
@@ -783,8 +815,18 @@ async function runRender(mode) {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ mode }),
     });
-    if (data.state) applyState(data.state);
-    if (data.url) updatePreview(data.url);
+    if (data.state) {
+      state._skipPreviewUpdate = true;
+      try {
+        applyState(data.state);
+      } finally {
+        state._skipPreviewUpdate = false;
+      }
+    }
+    const previewUrl = data.url || data.state?.preview_url || resolvePreviewUrl(data.state);
+    if (previewUrl) {
+      updatePreview(previewUrl, { forceReload: true });
+    }
     setStatus(mode === "final" ? t("finalReady") : t("ready"));
     if (mode === "final") {
       showReply(t("finalReadyReply"));
@@ -798,6 +840,7 @@ async function runRender(mode) {
 }
 
 function showReply(text) {
+  state.lastReply = text;
   els.commandReply.hidden = false;
   els.commandReply.textContent = text;
 }

@@ -248,10 +248,13 @@ OLLAMA_TOOLS: list[dict[str, Any]] = [
         "function": {
             "name": "apply_crossfade_to_selection",
             "description": (
-                "Apply a crossfade/fade transition on the clip boundary inside "
-                "the painted selection. Duration defaults to the selection "
-                "length (capped). Use for 'Tee valitulle alueelle crossfade' "
-                "or 'Apply a crossfade to the selected range'."
+                "Apply a crossfade/fade between two clips. "
+                "clip_index is 0-based for the first clip of the pair "
+                "(0 = between clip 1 and clip 2). "
+                "Pass duration_sec with clip_index for verbal requests without "
+                "a painted selection (e.g. 5s from end of clip1 + 5s from start "
+                "of clip2 → duration_sec=10, clip_index=0). "
+                "If only a painted selection exists, duration defaults to its length."
             ),
             "parameters": {
                 "type": "object",
@@ -262,7 +265,18 @@ OLLAMA_TOOLS: list[dict[str, Any]] = [
                     },
                     "duration_sec": {
                         "type": "number",
-                        "description": "Optional override; defaults to selection length.",
+                        "description": (
+                            "Crossfade duration in seconds. Required when there "
+                            "is no painted selection."
+                        ),
+                    },
+                    "clip_index": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "description": (
+                            "0-based index of the first clip (seam after this clip). "
+                            "0 = clips 1→2."
+                        ),
                     },
                 },
                 "required": [],
@@ -450,6 +464,7 @@ def execute_tool(
             ), changed
 
         if name == "apply_crossfade_to_selection":
+            clip_index = args.get("clip_index")
             transition = editor.apply_crossfade_to_selection(
                 transition_type=str(args.get("transition_type") or "fade"),
                 duration_sec=(
@@ -457,8 +472,19 @@ def execute_tool(
                     if args.get("duration_sec") is not None
                     else None
                 ),
+                clip_index=int(clip_index) if clip_index is not None else None,
             )
-            return _dump(transition), changed
+            return _dump(
+                {
+                    **transition.model_dump(),
+                    "ok": True,
+                    "duration_sec": transition.duration,
+                    "message": (
+                        f"Crossfade set after clip {transition.after_clip_index} "
+                        f"({transition.duration:.1f} s)"
+                    ),
+                }
+            ), changed
 
         if name == "add_blur_to_selection":
             effects = editor.add_blur_to_selection(

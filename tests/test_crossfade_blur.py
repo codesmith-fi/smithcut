@@ -64,6 +64,61 @@ def test_apply_crossfade_requires_boundary(two_clip_editor: EditorController):
         editor.apply_crossfade_to_selection()
 
 
+def test_apply_crossfade_by_clip_index_without_selection(
+    two_clip_editor: EditorController,
+):
+    editor = two_clip_editor
+    assert not editor.has_selection()
+    tr = editor.apply_crossfade_to_selection(
+        clip_index=0, duration_sec=5.0, transition_type="fade"
+    )
+    assert tr.after_clip_index == 0
+    assert tr.type == "fade"
+    assert tr.duration == pytest.approx(5.0)
+    assert not editor.has_selection()
+
+
+def test_apply_crossfade_verbal_5_plus_5_is_10(
+    two_clip_editor: EditorController,
+):
+    """'5 s lopusta + 5 s alusta' → duration_sec=10."""
+    editor = two_clip_editor
+    # Klipit ovat 10 s → max 90 % = 9 s
+    tr = editor.apply_crossfade_to_selection(clip_index=0, duration_sec=10.0)
+    assert tr.duration == pytest.approx(9.0)
+
+
+def test_execute_tool_crossfade_clip_index_duration(
+    two_clip_editor: EditorController,
+):
+    editor = two_clip_editor
+    text, changed = execute_tool(
+        editor,
+        "apply_crossfade_to_selection",
+        {"clip_index": 0, "duration_sec": 4.0},
+    )
+    assert changed is True
+    assert editor.timeline.transitions[0].duration == pytest.approx(4.0)
+    assert "4.0" in text or "4" in text
+
+
+def test_system_prompt_documents_verbal_crossfade():
+    from agent.llm_agent import _system_prompt
+
+    prompt = _system_prompt(
+        "fi",
+        {
+            "playhead_sec": 0.0,
+            "playhead_timecode": "00:00.0",
+            "selection_start_sec": None,
+            "selection_end_sec": None,
+        },
+    )
+    assert "clip_index=0" in prompt
+    assert "duration_sec=10.0" in prompt or "2*N" in prompt
+    assert "clippien 1 ja 2" in prompt.lower() or "clips 1 and 2" in prompt.lower()
+
+
 def test_add_blur_to_selection_single_clip(two_clip_editor: EditorController):
     editor = two_clip_editor
     editor.set_selection(2.0, 5.0)

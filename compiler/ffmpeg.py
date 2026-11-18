@@ -298,6 +298,7 @@ def is_simple_preview_timeline(timeline: Timeline) -> bool:
 
 
 def _source_input_map(timeline: Timeline) -> tuple[list[str], dict[str, int]]:
+    """Uniikit lähdepolut (vanha API / yksinkertaiset polut)."""
     paths: list[str] = []
     index_by_id: dict[str, int] = {}
     for source_id, source in timeline.sources.items():
@@ -306,6 +307,11 @@ def _source_input_map(timeline: Timeline) -> tuple[list[str], dict[str, int]]:
                 paths.append(source.path)
             index_by_id[source_id] = paths.index(source.path)
     return paths, index_by_id
+
+
+def _clip_input_paths(timeline: Timeline) -> list[str]:
+    """Yksi FFmpeg-input per klippi (sama tiedosto saa toistua) – vakaa xfade."""
+    return [timeline.sources[c.source_id].path for c in timeline.clips]
 
 
 def _gblur_step_filters(effect: BlurEffect, *, steps: int = 5) -> list[str]:
@@ -412,7 +418,20 @@ def _clip_video_filter(
     )
     parts.extend(["setsar=1", "format=yuv420p"])
     parts.extend(_effect_filters(clip, width, height, fps))
+    # Yhtenäinen aikakanta + formaatti ennen xfade/concat
+    parts.extend([f"fps={fps}", "format=yuv420p", "setpts=PTS-STARTPTS"])
     return ",".join(parts) + f"[{out_label}]"
+
+
+def _silence_audio_filter(duration: float, out_label: str) -> str:
+    """Stereo-hiljaisuus acrossfade/concat -yhteensopivassa muodossa."""
+    dur = max(float(duration), 0.05)
+    return (
+        f"anullsrc=channel_layout=stereo:sample_rate=48000,"
+        f"atrim=0:{dur:.6f},asetpts=PTS-STARTPTS,"
+        f"aformat=sample_fmts=fltp:channel_layouts=stereo:sample_rates=48000,"
+        f"aresample=48000,asetpts=PTS-STARTPTS[{out_label}]"
+    )
 
 
 def _clip_audio_filter(
@@ -422,11 +441,7 @@ def _clip_audio_filter(
     out_label: str,
 ) -> str:
     if not source.has_audio:
-        dur = clip.duration
-        return (
-            f"anullsrc=channel_layout=stereo:sample_rate=48000,"
-            f"atrim=0:{dur},asetpts=PTS-STARTPTS[{out_label}]"
-        )
+        return _silence_audio_filter(clip.duration, out_label)
 
     parts = [
         f"[{input_index}:a]atrim=start={clip.in_sec}:end={clip.out_sec}",
@@ -434,6 +449,14 @@ def _clip_audio_filter(
     ]
     if clip.speed != 1.0:
         parts.append(_atempo_chain(clip.speed))
+    # Yhtenäinen formaatti ennen acrossfade/concat
+    parts.extend(
+        [
+            "aformat=sample_fmts=fltp:channel_layouts=stereo:sample_rates=48000",
+            "aresample=48000",
+            "asetpts=PTS-STARTPTS",
+        ]
+    )
     return ",".join(parts) + f"[{out_label}]"
 
 
@@ -444,7 +467,7 @@ def build_filter_complex(timeline: Timeline, mode: RenderMode | str = "preview")
     width, height = _output_size(timeline, profile)
     # Esikatselu: hieman alempi FPS nopeuttaa pitkiä videoita
     fps = min(timeline.output_fps, 30) if profile == "preview" else timeline.output_fps
-    paths, index_by_id = _source_input_map(timeline)
+    clip_paths = _clip_input_paths(timeline)
 
     lines: list[str] = []
     video_labels: list[str] = []
@@ -452,7 +475,7 @@ def build_filter_complex(timeline: Timeline, mode: RenderMode | str = "preview")
 
     for i, clip in enumerate(timeline.clips):
         source = timeline.sources[clip.source_id]
-        inp = index_by_id[clip.source_id]
+        inp = i  # yksi -i per klippi
         v_out = f"v{i}"
         a_out = f"a{i}"
         lines.append(
@@ -466,7 +489,8 @@ def build_filter_complex(timeline: Timeline, mode: RenderMode | str = "preview")
 
     current_v = video_labels[0]
     current_a = audio_labels[0]
-    offset = timeline.clips[0].duration
+    # Kertyvä ulostulon kesto (ensimmäisen osan pituus ennen seuraavaa xfadea)
+    accumulated = float(timeline.clips[0].duration)
     n_clips = len(timeline.clips)
 
     for i in range(1, n_clips):
@@ -487,19 +511,20 @@ def build_filter_complex(timeline: Timeline, mode: RenderMode | str = "preview")
                     f"({transition.duration}s) for clips "
                     f"({left_dur:.3f}s, {right_dur:.3f}s)"
                 )
-            xfade_offset = max(0.0, offset - dur)
+            # offset = ensimmäisen osan kesto − siirtymän kesto
+            xfade_offset = max(0.0, accumulated - dur)
             lines.append(
                 f"[{current_v}][{next_v}]xfade=transition={transition.type}"
                 f":duration={dur:.6f}:offset={xfade_offset:.6f}[{out_v}]"
             )
             lines.append(
-                f"[{current_a}][{next_a}]acrossfade=d={dur:.6f}[{out_a}]"
+                f"[{current_a}][{next_a}]acrossfade=d={dur:.6f}:c1=tri:c2=tri[{out_a}]"
             )
-            offset = max(0.0, offset + timeline.clips[i].duration - dur)
+            accumulated = max(0.0, accumulated + right_dur - dur)
         else:
             lines.append(f"[{current_v}][{next_v}]concat=n=2:v=1:a=0[{out_v}]")
             lines.append(f"[{current_a}][{next_a}]concat=n=2:v=0:a=1[{out_a}]")
-            offset = offset + timeline.clips[i].duration
+            accumulated = accumulated + timeline.clips[i].duration
 
         current_v = out_v
         current_a = out_a
@@ -512,12 +537,14 @@ def build_filter_complex(timeline: Timeline, mode: RenderMode | str = "preview")
 
     if timeline.bgm is not None:
         bgm = timeline.bgm
-        bgm_index = len(paths)
+        bgm_index = len(clip_paths)
         fade_start = max(total - bgm.fade_out_sec, 0.0)
         lines.append(f"[{current_a}]volume={bgm.sfx_volume}[a_sfx]")
         bgm_parts = [
             f"[{bgm_index}:a]atrim=0:{total:.6f}",
             "asetpts=PTS-STARTPTS",
+            "aformat=sample_fmts=fltp:channel_layouts=stereo:sample_rates=48000",
+            "aresample=48000",
             f"volume={bgm.bgm_volume}",
         ]
         if bgm.fade_out_sec > 0 and total > 0:
@@ -571,11 +598,11 @@ def build_command(
     """Rakenna täydellinen ffmpeg-komento listana (preview | export/final)."""
     validate_timeline(timeline)
     profile = normalize_render_mode(mode)
-    paths, _ = _source_input_map(timeline)
+    clip_paths = _clip_input_paths(timeline)
     filter_complex = build_filter_complex(timeline, mode=profile)
 
     cmd: list[str] = ["ffmpeg", "-y", "-hide_banner"]
-    for path in paths:
+    for path in clip_paths:
         cmd.extend(["-i", path])
     if timeline.bgm is not None:
         cmd.extend(["-i", timeline.bgm.path])
@@ -595,7 +622,18 @@ def build_command(
     out_fps = (
         min(timeline.output_fps, 30) if profile == "preview" else timeline.output_fps
     )
-    cmd.extend(["-c:a", "aac", "-b:a", audio_bitrate, "-r", str(out_fps)])
+    cmd.extend(
+        [
+            "-c:a",
+            "aac",
+            "-b:a",
+            audio_bitrate,
+            "-r",
+            str(out_fps),
+            "-movflags",
+            "+faststart",
+        ]
+    )
 
     if profile == "preview":
         width, height = _output_size(timeline, profile)

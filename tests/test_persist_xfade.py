@@ -76,7 +76,7 @@ def test_20s_crossfade_xfade_offset_non_negative(tmp_path: Path):
 
     fc = build_filter_complex(editor.timeline, mode="preview")
     assert "xfade=transition=fade" in fc
-    assert "acrossfade=d=20" in fc or "acrossfade=d=20.000000" in fc
+    assert "acrossfade=d=20" in fc
     # offset=... ei negatiivinen
     assert "offset=-" not in fc
     assert "offset=10.000000" in fc or "offset=10." in fc
