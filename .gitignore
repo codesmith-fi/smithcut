@@ -1,0 +1,24 @@
+# Python & virtuaaliympäristö
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# Työtila & mediatiedostot (raakavideot, renderöidyt esikatselut, avainruudut)
+workspace/*
+!workspace/.gitkeep
+*.mp4
+*.mov
+*.mkv
+*.wav
+*.mp3
+
+# Paikalliset asetukset & IDE
+.env
+.DS_Store
+.vscode/
+.idea/
