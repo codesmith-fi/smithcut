@@ -111,6 +111,24 @@ def _state_payload(editor: EditorController, lang: str = "fi") -> dict[str, Any]
         _media_url(workspace, preview) if preview.is_file() else None
     )
     summary["final_url"] = _media_url(workspace, final) if final.is_file() else None
+    # Lähdevideoiden /media/-URL:t → soittimelle heti tuonnin jälkeen
+    # (ennen kuin cutsmith_preview.mp4 on valmis)
+    for source in summary.get("sources") or []:
+        path = source.get("path")
+        source["url"] = _media_url(workspace, Path(path)) if path else None
+    for clip in summary.get("clips") or []:
+        path = clip.get("source_path")
+        clip["source_url"] = _media_url(workspace, Path(path)) if path else None
+    if not summary["preview_url"]:
+        for clip in summary.get("clips") or []:
+            if clip.get("source_url"):
+                summary["preview_url"] = clip["source_url"]
+                break
+        if not summary["preview_url"]:
+            for source in summary.get("sources") or []:
+                if source.get("url"):
+                    summary["preview_url"] = source["url"]
+                    break
     summary["can_undo"] = editor.history.can_undo()
     summary["can_redo"] = editor.history.can_redo()
     return summary

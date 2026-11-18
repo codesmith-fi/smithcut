@@ -187,19 +187,38 @@ function clampPlayhead(sec) {
   return Math.min(total, Math.max(0, Number(sec) || 0));
 }
 
+function isActivelyScrubbing() {
+  return Boolean(state.scrubbing || state.selecting);
+}
+
 function setStillMode(on) {
-  state.stillMode = Boolean(on);
-  els.previewStage?.classList.toggle("is-scrubbing", state.stillMode);
+  // Still vain aktiivisen scrub/valinta-raahauksen aikana
+  const enabled = Boolean(on) && isActivelyScrubbing();
+  state.stillMode = enabled;
+  els.previewStage?.classList.toggle("is-scrubbing", enabled);
   if (els.stillFrame) {
-    els.stillFrame.hidden = !state.stillMode;
+    els.stillFrame.hidden = !enabled;
+    if (!enabled) {
+      els.stillFrame.removeAttribute("src");
+    }
   }
 }
 
 function showStillAt(sec) {
-  if (!els.stillFrame) return;
+  if (!els.stillFrame || !isActivelyScrubbing()) return;
   const tSec = clampPlayhead(sec);
   setStillMode(true);
   els.stillFrame.src = `/api/timeline/frame?t=${encodeURIComponent(tSec.toFixed(3))}&_=${Date.now()}`;
+}
+
+function hideStillAndSyncVideo() {
+  setStillMode(false);
+  if (!els.preview?.src) return;
+  try {
+    els.preview.currentTime = clampPlayhead(state.playheadSec);
+  } catch {
+    /* ignore seek errors */
+  }
 }
 
 function updatePlayheadUi(sec) {
@@ -478,22 +497,56 @@ function applyState(summary) {
   }
   renderClipStrip();
   renderScrubber();
-  updatePreview(summary.preview_url);
+  updatePreview(resolvePreviewUrl(summary));
+}
+
+function resolvePreviewUrl(summary) {
+  if (!summary) return null;
+  if (summary.preview_url) return summary.preview_url;
+  const clipUrl = summary.clips?.find((c) => c.source_url)?.source_url;
+  if (clipUrl) return clipUrl;
+  return summary.sources?.find((s) => s.url)?.url || null;
 }
 
 function updatePreview(url) {
-  const hasPreview = Boolean(url);
+  const resolved = url || resolvePreviewUrl(state.summary);
+  const hasPreview = Boolean(resolved);
   els.previewStage.classList.toggle("is-empty", !hasPreview);
+  els.preview.controls = true;
+  els.preview.preload = "metadata";
+
   if (!hasPreview) {
     els.preview.removeAttribute("src");
+    els.preview.removeAttribute("poster");
     els.preview.load();
     setStillMode(false);
     return;
   }
-  const next = `${url}?t=${Date.now()}`;
+
+  // Älä peitä soittimia stillillä latauksen yhteydessä
+  if (!isActivelyScrubbing()) {
+    setStillMode(false);
+  }
+
+  const base = String(resolved).split("?")[0];
+  const currentBase = (els.preview.getAttribute("src") || "").split("?")[0];
   const resume = state.playheadSec || els.preview.currentTime || 0;
-  const wasPaused = els.preview.paused && !state.scrubbing;
-  const keepStill = state.stillMode || state.scrubbing;
+  const wasPlaying = !els.preview.paused && !isActivelyScrubbing();
+
+  // Sama lähde: vain seek, ei turhaa reloadia (vältä musta välähdys)
+  if (currentBase && currentBase === base && els.preview.readyState >= 1) {
+    try {
+      els.preview.currentTime = Math.min(resume, els.preview.duration || resume);
+    } catch {
+      /* ignore */
+    }
+    return;
+  }
+
+  const next = `${base}?t=${Date.now()}`;
+  els.preview.poster = `/api/timeline/frame?t=${encodeURIComponent(
+    Number(resume || 0).toFixed(3)
+  )}`;
   els.preview.src = next;
   els.preview.load();
   els.preview.addEventListener(
@@ -507,11 +560,21 @@ function updatePreview(url) {
       } catch {
         /* ignore seek errors */
       }
-      if (!wasPaused && !keepStill) {
+      if (!isActivelyScrubbing()) {
         setStillMode(false);
+      }
+      if (wasPlaying) {
         els.preview.play().catch(() => {});
-      } else if (keepStill) {
-        showStillAt(state.playheadSec);
+      }
+    },
+    { once: true }
+  );
+  els.preview.addEventListener(
+    "loadeddata",
+    () => {
+      // Ensimmäinen ruutu + kontrollipalkki piirtyvät heti
+      if (!isActivelyScrubbing()) {
+        setStillMode(false);
       }
     },
     { once: true }
@@ -963,26 +1026,31 @@ function wireEvents() {
   });
 
   els.preview.addEventListener("click", (e) => {
-    if (state.stillMode) return;
+    // Still pois heti kun käyttäjä klikkaa videota / kontrollia
+    if (state.stillMode || isActivelyScrubbing()) {
+      hideStillAndSyncVideo();
+    }
+    if (isActivelyScrubbing()) return;
     addZoomAtClick(e).catch(() => {});
   });
 
   els.preview.addEventListener("play", () => {
-    setStillMode(false);
-    try {
-      els.preview.currentTime = clampPlayhead(state.playheadSec);
-    } catch {
-      /* ignore */
+    hideStillAndSyncVideo();
+  });
+
+  els.preview.addEventListener("pause", () => {
+    if (!isActivelyScrubbing()) {
+      setStillMode(false);
     }
   });
 
   els.preview.addEventListener("timeupdate", () => {
-    if (state.scrubbing || state.stillMode || els.preview.paused) return;
+    if (isActivelyScrubbing() || els.preview.paused) return;
     updatePlayheadUi(els.preview.currentTime || 0);
   });
 
   els.preview.addEventListener("seeked", () => {
-    if (state.scrubbing) return;
+    if (isActivelyScrubbing()) return;
     if (!els.preview.paused) {
       updatePlayheadUi(els.preview.currentTime || 0);
       postPlayhead(state.playheadSec);
@@ -1045,15 +1113,17 @@ function wireEvents() {
     };
     const onPointerUp = (e) => {
       if (state.selecting) {
-        state.selecting = false;
         paintSelectionTo(secFromPointerEvent(e), { immediate: true });
+        state.selecting = false;
         state.selectMode = null;
         state.selectAnchor = null;
+        hideStillAndSyncVideo();
         return;
       }
       if (!state.scrubbing) return;
-      state.scrubbing = false;
       scrubTo(secFromPointerEvent(e), { immediate: true });
+      state.scrubbing = false;
+      hideStillAndSyncVideo();
     };
     els.scrubberTrack.addEventListener("pointerdown", onPointerDown);
     els.scrubberTrack.addEventListener("pointermove", onPointerMove);

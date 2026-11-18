@@ -256,8 +256,9 @@ body {
   box-shadow: inset 0 0 0 2px var(--accent-dim);
 }
 
-.preview-stage video,
-.preview-stage .still-frame {
+.preview-stage video {
+  position: relative;
+  z-index: 0;
   width: 100%;
   height: 100%;
   object-fit: contain;
@@ -265,21 +266,35 @@ body {
   display: block;
 }
 
+/* Still peittää vain kuva-alueen; alareunan natiivikontrollit (~48px) jäävät auki */
 .preview-stage .still-frame {
   position: absolute;
-  inset: 0;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 48px;
   z-index: 1;
+  width: auto;
+  height: auto;
+  object-fit: contain;
+  background: #000;
+  display: block;
+  pointer-events: none;
 }
 
-.preview-stage.is-scrubbing video {
-  opacity: 0;
-  pointer-events: none;
+.preview-stage .still-frame[hidden] {
+  display: none !important;
 }
 
 .preview-stage.is-empty video,
 .preview-stage.is-empty .still-frame {
   opacity: 0;
   pointer-events: none;
+}
+
+.preview-stage:not(.is-empty) video {
+  opacity: 1;
+  pointer-events: auto;
 }
 
 .preview-empty {
