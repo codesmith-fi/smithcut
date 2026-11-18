@@ -488,6 +488,32 @@ OLLAMA_TOOLS: list[dict[str, Any]] = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "reset_project",
+            "description": (
+                "Start a new empty project: clear timeline, audio tracks/clips, "
+                "fades, undo/redo, and remove preview/export temp files. "
+                "Use for 'Aloita uusi projekti', 'Tyhjennä aikajana', "
+                "'Nollaa työtila'. Set delete_media=true only if the user "
+                "explicitly asks to delete imported source media too."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "delete_media": {
+                        "type": "boolean",
+                        "description": (
+                            "Also delete imported source media in workspace "
+                            "(default false)."
+                        ),
+                    },
+                },
+                "required": [],
+            },
+        },
+    },
 ]
 
 
@@ -744,6 +770,11 @@ def execute_tool(
                 clip_index=None if idx is None else int(idx),
                 volume=float(args.get("volume") if args.get("volume") is not None else 1.0),
             )
+            return _dump(result), changed
+
+        if name == "reset_project":
+            delete_media = bool(args.get("delete_media") or False)
+            result = editor.reset_project(delete_media=delete_media)
             return _dump(result), changed
 
         return json.dumps({"error": f"Unknown tool: {name}"}), False

@@ -387,6 +387,16 @@ def create_mcp_server(
             {"volume": volume, "clip_index": clip_index},
         )
 
+    @server.tool(
+        name="reset_project",
+        description=(
+            "Start a new empty project and clear preview/export temps. "
+            "Use for 'Aloita uusi projekti' / 'Tyhjennä aikajana' / 'Nollaa työtila'."
+        ),
+    )
+    def reset_project(delete_media: bool = False) -> str:
+        return _run("reset_project", {"delete_media": delete_media})
+
     # Testejä / agenttia varten: säilytä controller-viite
     server._cutsmith_editor = ctrl  # type: ignore[attr-defined]
     return server

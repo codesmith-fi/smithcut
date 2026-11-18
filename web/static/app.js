@@ -35,6 +35,7 @@ const els = {
   status: document.getElementById("status"),
   undo: document.getElementById("btn-undo"),
   redo: document.getElementById("btn-redo"),
+  newProject: document.getElementById("btn-new-project"),
   exportBtn: document.getElementById("btn-export"),
   preview: document.getElementById("preview"),
   stillFrame: document.getElementById("still-frame"),
@@ -1143,6 +1144,36 @@ function wireEvents() {
   els.redo.addEventListener("click", () =>
     mutate(() => api("/api/redo", { method: "POST" }))
   );
+  if (els.newProject) {
+    els.newProject.addEventListener("click", async () => {
+      if (!window.confirm(t("newProjectConfirm"))) return;
+      try {
+        setStatus(t("updating"), true);
+        const data = await api("/api/project/reset", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ delete_media: false }),
+        });
+        state.selectedClip = 1;
+        state.playheadSec = 0;
+        state.selectionStart = null;
+        state.selectionEnd = null;
+        state.lastReply = null;
+        if (els.commandReply) {
+          els.commandReply.hidden = true;
+          els.commandReply.textContent = "";
+        }
+        if (data.state) applyState(data.state);
+        else await refreshState();
+        updatePreview(null, { forceReload: true });
+        setStatus(t("projectReset"));
+        showReply(t("projectReset"));
+      } catch (err) {
+        setStatus(t("ready"));
+        showReply(err.message || t("actionFailed"));
+      }
+    });
+  }
   els.exportBtn.addEventListener("click", () => runRender("final"));
 
   els.fileInput.addEventListener("change", async () => {

@@ -18,6 +18,10 @@ const dictionaries = {
       "Valmis video on valmis – voit avata sen esikatselusta tai workspace-kansiosta.",
     undo: "Kumoa",
     redo: "Tee uudelleen",
+    newProject: "Uusi projekti",
+    newProjectConfirm:
+      "Haluatko varmasti tyhjentää nykyisen projektin ja esikatselut?",
+    projectReset: "Projekti nollattu",
     export: "Vie valmis video",
     previewAria: "Esikatselu",
     previewEmptyTitle: "Tuo video aloittaaksesi",
@@ -120,6 +124,10 @@ const dictionaries = {
       "Your final video is ready — open it from the preview or the workspace folder.",
     undo: "Undo",
     redo: "Redo",
+    newProject: "New project",
+    newProjectConfirm:
+      "Clear the current project and previews?",
+    projectReset: "Project reset",
     export: "Export final video",
     previewAria: "Preview",
     previewEmptyTitle: "Import a video to get started",

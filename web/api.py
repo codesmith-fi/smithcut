@@ -96,6 +96,10 @@ class AudioRequest(BaseModel):
     ripple: bool = False
 
 
+class ResetProjectRequest(BaseModel):
+    delete_media: bool = False
+
+
 # ---------------------------------------------------------------------------
 # Apurit
 # ---------------------------------------------------------------------------
@@ -457,6 +461,26 @@ def create_app(
             return {"ok": True, "state": _state_payload(editor, lang=code)}
         except (ValueError, IndexError) as exc:
             return _error(exc)
+        except Exception as exc:  # noqa: BLE001
+            return _error(exc, status=500)
+
+    @app.post("/api/project/reset", response_model=None)
+    def api_project_reset(
+        body: ResetProjectRequest | None = None,
+        lang: str = Query(default="fi"),
+        delete_media: bool = Query(default=False),
+    ):
+        editor = get_editor()
+        code = _lang_from_request(lang)
+        req = body or ResetProjectRequest()
+        flag = bool(req.delete_media or delete_media)
+        try:
+            result = editor.reset_project(delete_media=flag)
+            return {
+                "ok": True,
+                "result": result,
+                "state": _state_payload(editor, lang=code),
+            }
         except Exception as exc:  # noqa: BLE001
             return _error(exc, status=500)
 

@@ -1050,6 +1050,95 @@ class EditorController:
         self._flush_persist()
         return True
 
+    def reset_project(self, delete_media: bool = False) -> dict[str, Any]:
+        """Nollaa aikajana, historia ja session väliaikaistiedostot."""
+        removed: list[str] = []
+        ws = Path(self.workspace)
+        ws.mkdir(parents=True, exist_ok=True)
+
+        # Renderöidyt esikatselu-/vientivideot workspace-juuressa
+        render_globs = (
+            "preview*.mp4",
+            "export*.mp4",
+            "final*.mp4",
+            "cutsmith_*.mp4",
+        )
+        for pattern in render_globs:
+            for path in ws.glob(pattern):
+                if path.is_file():
+                    try:
+                        path.unlink()
+                        removed.append(path.name)
+                    except OSError:
+                        pass
+
+        # Väliaikaiset alikansiot (frames, thumbnails, extracted audio)
+        for sub in ("frames", "thumbnails", "audio"):
+            folder = ws / sub
+            if not folder.is_dir():
+                continue
+            for path in folder.iterdir():
+                if path.name == ".gitkeep":
+                    continue
+                try:
+                    if path.is_file() or path.is_symlink():
+                        path.unlink()
+                        removed.append(f"{sub}/{path.name}")
+                    elif path.is_dir():
+                        # älä poista sisäkkäisiä kansioita aggressiivisesti
+                        pass
+                except OSError:
+                    pass
+
+        state_path = self._project_state_path()
+        if state_path.is_file():
+            try:
+                state_path.unlink()
+                removed.append(PROJECT_STATE_FILENAME)
+            except OSError:
+                pass
+
+        if delete_media:
+            media_ext = {
+                ".mp4",
+                ".mov",
+                ".mkv",
+                ".webm",
+                ".avi",
+                ".m4v",
+                ".mp3",
+                ".wav",
+                ".aac",
+                ".m4a",
+                ".ogg",
+                ".flac",
+            }
+            for path in ws.iterdir():
+                if path.name == ".gitkeep":
+                    continue
+                if path.is_file() and path.suffix.lower() in media_ext:
+                    try:
+                        path.unlink()
+                        removed.append(path.name)
+                    except OSError:
+                        pass
+
+        # Tuore tyhjä tila
+        self.timeline = Timeline()
+        self.history.clear()
+        self.playhead_sec = 0.0
+        self.selection_start_sec = None
+        self.selection_end_sec = None
+        self.clear_progress()
+        self._flush_persist()
+
+        return {
+            "ok": True,
+            "delete_media": bool(delete_media),
+            "removed": removed,
+            "clip_count": 0,
+        }
+
     def get_state_summary(self, lang: str = "fi") -> dict[str, Any]:
         """Selkokielinen 1-pohjainen yhteenveto UI:ta ja LLM:ää varten."""
         lang = normalize_lang(lang)

@@ -71,6 +71,7 @@ def test_mcp_lists_expected_tools(editor: EditorController):
         "cut_audio_range",
         "move_audio_clip",
         "set_audio_clip_volume",
+        "reset_project",
     } <= names
     by_name = {t.name: t for t in tools}
     assert "1-based" in (by_name["add_text"].description or "")
