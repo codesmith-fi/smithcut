@@ -54,6 +54,9 @@ _SUMMARY_I18N: dict[str, dict[str, Any]] = {
         "audio_track": "Ääniraita {n}",
         "video_audio_muted": "Videon oma ääni mykistetty",
         "video_audio_on": "Videon oma ääni käytössä",
+        "fade_in_out": "Alku­häivytys {fade_in} s, loppuhäivytys {fade_out} s",
+        "fade_in_only": "Alku­häivytys {fade_in} s",
+        "fade_out_only": "Loppuhäivytys {fade_out} s",
         "empty": "Aikajana on tyhjä – tuo video aloittaaksesi.",
         "description": (
             "Aikajanalla on {count} klippiä, kokonaiskesto {duration} s, "
@@ -75,6 +78,9 @@ _SUMMARY_I18N: dict[str, dict[str, Any]] = {
         "audio_track": "Audio track {n}",
         "video_audio_muted": "Video audio muted",
         "video_audio_on": "Video audio on",
+        "fade_in_out": "Fade in {fade_in} s, fade out {fade_out} s",
+        "fade_in_only": "Fade in {fade_in} s",
+        "fade_out_only": "Fade out {fade_out} s",
         "empty": "Timeline is empty — import a video to get started.",
         "description": (
             "Timeline has {count} clip(s), total duration {duration} s, "
@@ -239,6 +245,9 @@ class EditorController:
             audio_tracks=kept_audio,
             active_audio_track_id=active_id,
             active_audio_start_sec=timeline.active_audio_start_sec,
+            fade_in_sec=timeline.fade_in_sec,
+            fade_out_sec=timeline.fade_out_sec,
+            fade_audio=timeline.fade_audio,
             output_fps=timeline.output_fps,
         )
         try:
@@ -736,6 +745,33 @@ class EditorController:
         self._flush_persist()
         return track
 
+    def set_timeline_fades(
+        self,
+        fade_in_sec: float | None = None,
+        fade_out_sec: float | None = None,
+        fade_audio: bool = True,
+    ) -> dict[str, Any]:
+        """Aseta koko aikajanan alku-/loppuhäivytys (vain ei-None-arvot päivittyvät)."""
+        if fade_in_sec is not None and fade_in_sec < 0:
+            raise ValueError("fade_in_sec must be >= 0")
+        if fade_out_sec is not None and fade_out_sec < 0:
+            raise ValueError("fade_out_sec must be >= 0")
+        if fade_in_sec is None and fade_out_sec is None:
+            raise ValueError("provide fade_in_sec and/or fade_out_sec")
+
+        self._checkpoint()
+        if fade_in_sec is not None:
+            self.timeline.fade_in_sec = float(fade_in_sec)
+        if fade_out_sec is not None:
+            self.timeline.fade_out_sec = float(fade_out_sec)
+        self.timeline.fade_audio = bool(fade_audio)
+        self._flush_persist()
+        return {
+            "fade_in_sec": self.timeline.fade_in_sec,
+            "fade_out_sec": self.timeline.fade_out_sec,
+            "fade_audio": self.timeline.fade_audio,
+        }
+
     def undo(self) -> bool:
         previous = self.history.undo(self.timeline)
         if previous is None:
@@ -915,6 +951,29 @@ class EditorController:
                 None,
             ),
             "active_audio_start_sec": self.timeline.active_audio_start_sec,
+            "fade_in_sec": round(self.timeline.fade_in_sec, 3),
+            "fade_out_sec": round(self.timeline.fade_out_sec, 3),
+            "fade_audio": self.timeline.fade_audio,
+            "timeline_fade_label": (
+                L["fade_in_out"].format(
+                    fade_in=round(self.timeline.fade_in_sec, 2),
+                    fade_out=round(self.timeline.fade_out_sec, 2),
+                )
+                if self.timeline.fade_in_sec > 0 and self.timeline.fade_out_sec > 0
+                else (
+                    L["fade_in_only"].format(
+                        fade_in=round(self.timeline.fade_in_sec, 2)
+                    )
+                    if self.timeline.fade_in_sec > 0
+                    else (
+                        L["fade_out_only"].format(
+                            fade_out=round(self.timeline.fade_out_sec, 2)
+                        )
+                        if self.timeline.fade_out_sec > 0
+                        else None
+                    )
+                )
+            ),
             "total_duration_sec": total,
             "output_fps": self.timeline.output_fps,
             "playhead_sec": round(self.playhead_sec, 3),

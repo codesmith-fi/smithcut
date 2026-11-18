@@ -500,9 +500,19 @@ function applyState(summary) {
 
   els.undo.disabled = !summary.can_undo;
   els.redo.disabled = !summary.can_redo;
-  els.timelineDuration.textContent = t("duration", {
+  let durationText = t("duration", {
     time: formatSeconds(summary.total_duration_sec),
   });
+  const fadeIn = Number(summary.fade_in_sec) || 0;
+  const fadeOut = Number(summary.fade_out_sec) || 0;
+  if (fadeIn > 0 && fadeOut > 0) {
+    durationText += t("timelineFades", { in: formatSeconds(fadeIn), out: formatSeconds(fadeOut) });
+  } else if (fadeIn > 0) {
+    durationText += t("timelineFadeIn", { in: formatSeconds(fadeIn) });
+  } else if (fadeOut > 0) {
+    durationText += t("timelineFadeOut", { out: formatSeconds(fadeOut) });
+  }
+  els.timelineDuration.textContent = durationText;
 
   const sourceCount = summary.sources?.length || 0;
   const music = summary.bgm ? t("musicSelected") : "";

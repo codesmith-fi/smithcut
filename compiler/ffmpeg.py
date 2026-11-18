@@ -552,11 +552,24 @@ def build_filter_complex(timeline: Timeline, mode: RenderMode | str = "preview")
 
         current_v = out_v
 
-    # Lopulliset videotunnisteet
-    if current_v != "vout":
+    total = timeline.total_duration()
+    fade_in = min(float(timeline.fade_in_sec), total) if timeline.fade_in_sec > 0 else 0.0
+    fade_out = (
+        min(float(timeline.fade_out_sec), total) if timeline.fade_out_sec > 0 else 0.0
+    )
+
+    # Koko aikajanan video-häivytykset lopulliseen voutiin
+    v_fade_parts: list[str] = []
+    if fade_in > 0:
+        v_fade_parts.append(f"fade=t=in:st=0:d={fade_in:.6f}")
+    if fade_out > 0:
+        fade_out_st = max(0.0, total - fade_out)
+        v_fade_parts.append(f"fade=t=out:st={fade_out_st:.6f}:d={fade_out:.6f}")
+    if v_fade_parts:
+        lines.append(f"[{current_v}]{','.join(v_fade_parts)}[vout]")
+    elif current_v != "vout":
         lines.append(f"[{current_v}]null[vout]")
 
-    total = timeline.total_duration()
     next_extra = n_clip_inputs
 
     if use_continuous:
@@ -585,7 +598,7 @@ def build_filter_complex(timeline: Timeline, mode: RenderMode | str = "preview")
     if timeline.bgm is not None:
         bgm = timeline.bgm
         bgm_index = next_extra
-        fade_start = max(total - bgm.fade_out_sec, 0.0)
+        bgm_fade_start = max(total - bgm.fade_out_sec, 0.0)
         lines.append(f"[{bed_label}]volume={bgm.sfx_volume}[a_sfx]")
         bgm_parts = [
             f"[{bgm_index}:a]atrim=0:{total:.6f}",
@@ -596,14 +609,28 @@ def build_filter_complex(timeline: Timeline, mode: RenderMode | str = "preview")
         ]
         if bgm.fade_out_sec > 0 and total > 0:
             bgm_parts.append(
-                f"afade=t=out:st={fade_start:.6f}:d={bgm.fade_out_sec:.6f}"
+                f"afade=t=out:st={bgm_fade_start:.6f}:d={bgm.fade_out_sec:.6f}"
             )
         lines.append(",".join(bgm_parts) + "[a_bgm]")
         lines.append(
-            "[a_sfx][a_bgm]amix=inputs=2:duration=first:dropout_transition=0[aout]"
+            "[a_sfx][a_bgm]amix=inputs=2:duration=first:dropout_transition=0[a_pre]"
         )
-    elif bed_label != "aout":
-        lines.append(f"[{bed_label}]anull[aout]")
+    else:
+        lines.append(f"[{bed_label}]anull[a_pre]")
+
+    # Aikajanan afade (klippiääni tai liitetty AudioTrack / BGM-mix)
+    has_real_audio = use_clip_audio or use_continuous or timeline.bgm is not None
+    a_fade_parts: list[str] = []
+    if timeline.fade_audio and has_real_audio:
+        if fade_in > 0:
+            a_fade_parts.append(f"afade=t=in:st=0:d={fade_in:.6f}")
+        if fade_out > 0:
+            fade_out_st = max(0.0, total - fade_out)
+            a_fade_parts.append(f"afade=t=out:st={fade_out_st:.6f}:d={fade_out:.6f}")
+    if a_fade_parts:
+        lines.append(f"[a_pre]{','.join(a_fade_parts)}[aout]")
+    else:
+        lines.append("[a_pre]anull[aout]")
 
     return ";\n".join(lines)
 

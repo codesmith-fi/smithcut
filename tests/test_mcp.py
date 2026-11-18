@@ -65,6 +65,7 @@ def test_mcp_lists_expected_tools(editor: EditorController):
         "add_blur_to_selection",
         "remove_video_audio",
         "attach_audio_track",
+        "set_timeline_fades",
     } <= names
     by_name = {t.name: t for t in tools}
     assert "1-based" in (by_name["add_text"].description or "")

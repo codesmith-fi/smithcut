@@ -302,6 +302,28 @@ def create_mcp_server(
             {"track_index": track_index, "start_sec": start_sec},
         )
 
+    @server.tool(
+        name="set_timeline_fades",
+        description=(
+            "Set whole-timeline fade in from black and/or fade out to black "
+            "(video + audio). Use for 'Tee alkuun 5 sekunnin fade in…' / "
+            "'Lisää 3 sekunnin loppuhäivytys'."
+        ),
+    )
+    def set_timeline_fades(
+        fade_in_sec: float | None = None,
+        fade_out_sec: float | None = None,
+        fade_audio: bool = True,
+    ) -> str:
+        return _run(
+            "set_timeline_fades",
+            {
+                "fade_in_sec": fade_in_sec,
+                "fade_out_sec": fade_out_sec,
+                "fade_audio": fade_audio,
+            },
+        )
+
     # Testejä / agenttia varten: säilytä controller-viite
     server._cutsmith_editor = ctrl  # type: ignore[attr-defined]
     return server

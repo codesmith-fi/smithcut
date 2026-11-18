@@ -350,6 +350,38 @@ OLLAMA_TOOLS: list[dict[str, Any]] = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "set_timeline_fades",
+            "description": (
+                "Set whole-timeline fade in from black and/or fade out to black "
+                "(video + audio). Pass only the durations you want to change. "
+                "Use for 'Tee alkuun 5 sekunnin fade in ja feidaa lopussa pois "
+                "10 sekunnin ajan', 'Lisää 3 sekunnin loppuhäivytys', "
+                "'Tee videon alkuun 5 sekunnin fade in ja videon loppuun sama "
+                "5 sekunnin fade out'."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "fade_in_sec": {
+                        "type": "number",
+                        "description": "Fade-in duration from black (seconds).",
+                    },
+                    "fade_out_sec": {
+                        "type": "number",
+                        "description": "Fade-out duration to black (seconds).",
+                    },
+                    "fade_audio": {
+                        "type": "boolean",
+                        "description": "Also fade audio (default true).",
+                    },
+                },
+                "required": [],
+            },
+        },
+    },
 ]
 
 
@@ -554,6 +586,17 @@ def execute_tool(
                 start_sec=float(args.get("start_sec") or 0.0),
             )
             return _dump(track), changed
+
+        if name == "set_timeline_fades":
+            fade_in = args.get("fade_in_sec")
+            fade_out = args.get("fade_out_sec")
+            fade_audio = args.get("fade_audio")
+            result = editor.set_timeline_fades(
+                fade_in_sec=None if fade_in is None else float(fade_in),
+                fade_out_sec=None if fade_out is None else float(fade_out),
+                fade_audio=True if fade_audio is None else bool(fade_audio),
+            )
+            return _dump(result), changed
 
         return json.dumps({"error": f"Unknown tool: {name}"}), False
     except Exception as exc:  # noqa: BLE001 – LLM tarvitsee selkeän virheen

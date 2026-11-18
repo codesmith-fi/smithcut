@@ -140,6 +140,10 @@ class Timeline(BaseModel):
     # Aktiivinen pool-ääniraita (id) – soi katkeamattomana koko aikajanan yli
     active_audio_track_id: Optional[str] = None
     active_audio_start_sec: float = Field(default=0.0, ge=0.0)
+    # Koko aikajanan alku-/loppuhäivytys mustasta/mustaan
+    fade_in_sec: float = Field(default=0.0, ge=0.0)
+    fade_out_sec: float = Field(default=0.0, ge=0.0)
+    fade_audio: bool = True
     output_fps: int = Field(default=60, gt=0)
 
     def audio_track_by_id(self, track_id: str) -> AudioTrack | None:
