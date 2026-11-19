@@ -358,7 +358,7 @@ class EditorController:
             self._adjust_transitions_after_remove(clip_index)
 
     def move_clip(self, from_index: int, to_index: int) -> None:
-        """Siirrä klippi uuteen indeksiin (0-pohjainen)."""
+        """Siirrä klippi uuteen indeksiin (0-pohjainen); säilytä koskemattomat saumat."""
         with self._persist_batch():
             n = len(self.timeline.clips)
             if from_index < 0 or from_index >= n:
@@ -369,10 +369,30 @@ class EditorController:
                 return
 
             self._checkpoint()
+            # Tallenna vanhat siirtymät klippiparien (left_id, right_id) mukaan
+            pair_transitions: dict[tuple[str, str], Transition] = {}
+            for t in self.timeline.transitions:
+                if 0 <= t.after_clip_index < n - 1:
+                    pair = (
+                        self.timeline.clips[t.after_clip_index].id,
+                        self.timeline.clips[t.after_clip_index + 1].id,
+                    )
+                    pair_transitions[pair] = t
+
             clip = self.timeline.clips.pop(from_index)
             self.timeline.clips.insert(to_index, clip)
-            # Indeksipohjaiset siirtymät eivät säily järjestyksen vaihdossa luotettavasti.
-            self.timeline.transitions = []
+
+            # Säilytä siirtymät niissä saumoissa joissa sama klippipari on yhä vierekkäin
+            kept: list[Transition] = []
+            for j in range(len(self.timeline.clips) - 1):
+                pair = (self.timeline.clips[j].id, self.timeline.clips[j + 1].id)
+                if pair in pair_transitions:
+                    kept.append(
+                        pair_transitions[pair].model_copy(
+                            update={"after_clip_index": j}
+                        )
+                    )
+            self.timeline.transitions = kept
 
     def set_transition(
         self,
@@ -1129,13 +1149,24 @@ class EditorController:
                 raise ValueError("cut range is empty or outside timeline")
 
             spans = self.clip_spans()
+            old_transitions = list(self.timeline.transitions)
             self._checkpoint()
             new_clips: list[Clip] = []
+            # Seuraa kunkin vanhan klipin uusia indeksejä ja sitä, jäivätkö alku/loppu ehjiksi
+            first_new_idx: dict[int, int] = {}
+            last_new_idx: dict[int, int] = {}
+            start_intact: dict[int, bool] = {}
+            end_intact: dict[int, bool] = {}
 
             for i, cs, ce in spans:
                 clip = self.timeline.clips[i]
                 if ce <= start + 1e-9 or cs >= end - 1e-9:
+                    idx = len(new_clips)
                     new_clips.append(clip)
+                    first_new_idx[i] = idx
+                    last_new_idx[i] = idx
+                    start_intact[i] = True
+                    end_intact[i] = True
                     continue
                 if cs >= start - 1e-9 and ce <= end + 1e-9:
                     # Koko klippi poistetaan
@@ -1167,9 +1198,21 @@ class EditorController:
                         }
                     )
                     if left.out_sec > left.in_sec + 1e-9:
+                        idx = len(new_clips)
                         new_clips.append(left)
+                        first_new_idx[i] = idx
+                        start_intact[i] = True
                     if right.out_sec > right.in_sec + 1e-9:
+                        idx = len(new_clips)
                         new_clips.append(right)
+                        if i not in first_new_idx:
+                            first_new_idx[i] = idx
+                            start_intact[i] = False
+                        last_new_idx[i] = idx
+                        end_intact[i] = True
+                    elif i in first_new_idx:
+                        last_new_idx[i] = first_new_idx[i]
+                        end_intact[i] = False
                 elif cs < start:
                     # Trimmaa loppu kohtaan start
                     local_end = (start - cs) * clip.speed
@@ -1181,7 +1224,12 @@ class EditorController:
                         }
                     )
                     if updated.out_sec > updated.in_sec + 1e-9:
+                        idx = len(new_clips)
                         new_clips.append(updated)
+                        first_new_idx[i] = idx
+                        last_new_idx[i] = idx
+                        start_intact[i] = True
+                        end_intact[i] = False
                 else:
                     # Trimmaa alku kohtaan end
                     local_start = (end - cs) * clip.speed
@@ -1195,10 +1243,38 @@ class EditorController:
                         }
                     )
                     if updated.out_sec > updated.in_sec + 1e-9:
+                        idx = len(new_clips)
                         new_clips.append(updated)
+                        first_new_idx[i] = idx
+                        last_new_idx[i] = idx
+                        start_intact[i] = False
+                        end_intact[i] = True
+
+            # Säilytä siirtymät koskemattomissa saumoissa
+            kept_transitions: list[Transition] = []
+            for t in old_transitions:
+                left_old = t.after_clip_index
+                right_old = left_old + 1
+                if (
+                    left_old in last_new_idx
+                    and right_old in first_new_idx
+                    and end_intact.get(left_old, False)
+                    and start_intact.get(right_old, False)
+                ):
+                    new_left = last_new_idx[left_old]
+                    new_right = first_new_idx[right_old]
+                    if (
+                        new_left + 1 == new_right
+                        and t.duration < new_clips[new_left].duration
+                        and t.duration < new_clips[new_right].duration
+                    ):
+                        kept_transitions.append(
+                            t.model_copy(update={"after_clip_index": new_left})
+                        )
+            kept_transitions.sort(key=lambda t: t.after_clip_index)
 
             self.timeline.clips = new_clips
-            self.timeline.transitions = []
+            self.timeline.transitions = kept_transitions
             self.set_playhead(start)
 
     def cut_at_playhead(self, duration_sec: float) -> None:

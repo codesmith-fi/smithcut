@@ -58,8 +58,8 @@ ollama pull qwen3:8b
 
 1. **Clone the repository and enter the directory:**
    ```bash
-   git clone https://github.com/codesmith-fi/smithcut.git
-   cd smithcut
+   git clone https://github.com/codesmith-fi/cutsmith.git
+   cd cutsmith
    ```
 
 2. **Create and activate a virtual environment:**
@@ -76,7 +76,7 @@ ollama pull qwen3:8b
    ```
 
 4. **Configure environment variables (optional):**
-   If `.env.example` is present, copy it and adjust the model endpoint or name if needed:
+   Copy `.env.example` to `.env` to customize `OLLAMA_HOST`, `CUTSMITH_MODEL`, or `CUTSMITH_KEEP_ALIVE` (e.g. `15s` on 8 GB VRAM GPUs to free memory before NVENC export):
    ```bash
    cp .env.example .env
    ```

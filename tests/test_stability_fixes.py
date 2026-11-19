@@ -290,3 +290,53 @@ def test_run_agent_multi_turn_history_and_keep_alive_env(
         ("assistant", "Eka vastaus."),
         ("user", "Jatkokysymys"),
     ]
+
+
+def test_cut_out_range_preserves_untouched_transitions(tmp_path: Path):
+    editor = _editor_with_video(tmp_path)
+    # 3 klippiä: 0..8s, 8..14s, 14..20s
+    editor.split_clip(0, 8.0)
+    editor.split_clip(1, 6.0)
+    editor.set_transition(0, "fade", 1.0)
+    editor.set_transition(1, "fadeblack", 1.0)
+
+    # Leikkaa pala keskeltä klippiä 0 (2..4s) -> 4 klippiä, molemmat siirtymät säilyvät!
+    editor.cut_out_range(2.0, 2.0)
+    assert len(editor.timeline.clips) == 4
+    assert [(t.after_clip_index, t.type) for t in editor.timeline.transitions] == [
+        (1, "fade"),
+        (2, "fadeblack"),
+    ]
+    editor.timeline.validate_consistency()
+
+
+def test_cut_out_range_across_seam_drops_only_cut_transition(tmp_path: Path):
+    editor = _editor_with_video(tmp_path)
+    editor.split_clip(0, 8.0)
+    editor.split_clip(1, 6.0)
+    editor.set_transition(0, "fade", 1.0)
+    editor.set_transition(1, "wipeleft", 1.0)
+
+    # Leikkaa sauman 0->1 yli (6..9s): ensimmäinen siirtymä poistuu, toinen (wipeleft) säilyy!
+    editor.cut_out_range(6.0, 3.0)
+    assert [(t.after_clip_index, t.type) for t in editor.timeline.transitions] == [
+        (1, "wipeleft"),
+    ]
+    editor.timeline.validate_consistency()
+
+
+def test_move_clip_preserves_adjacent_pair_transitions(tmp_path: Path):
+    editor = _editor_with_video(tmp_path)
+    # 4 klippiä: C0, C1, C2, C3 (5s kukin)
+    editor.split_clip(0, 5.0)
+    editor.split_clip(1, 5.0)
+    editor.split_clip(2, 5.0)
+    editor.set_transition(0, "fade", 0.5)       # C0 -> C1
+    editor.set_transition(2, "fadeblack", 0.5)  # C2 -> C3
+
+    # Siirrä C3 alkuun -> [C3, C0, C1, C2]: C0->C1 pysyy vierekkäin indeksissä 1
+    editor.move_clip(3, 0)
+    assert [(t.after_clip_index, t.type) for t in editor.timeline.transitions] == [
+        (1, "fade"),
+    ]
+    editor.timeline.validate_consistency()
