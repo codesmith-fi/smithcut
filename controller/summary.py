@@ -122,6 +122,7 @@ def build_state_summary(
                         "target_x": effect.target_x,
                         "target_y": effect.target_y,
                         "zoom_factor": effect.zoom_factor,
+                        "animated": effect.animated,
                     }
                 )
             elif isinstance(effect, TextEffect):

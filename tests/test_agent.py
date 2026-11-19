@@ -73,9 +73,16 @@ def test_execute_tool_add_text_and_zoom_1_based():
     zoom, _ = execute_tool(
         editor,
         "add_zoom",
-        {"clip_index": 1, "start_sec": 0, "duration": 1, "zoom_factor": 2.0},
+        {
+            "clip_index": 1,
+            "start_sec": 0,
+            "duration": 1,
+            "zoom_factor": 2.0,
+            "animated": True,
+        },
     )
     assert "zoom" in zoom
+    assert editor.timeline.clips[0].effects[-1].animated is True
 
 
 def test_run_agent_tool_then_reply(monkeypatch: pytest.MonkeyPatch):

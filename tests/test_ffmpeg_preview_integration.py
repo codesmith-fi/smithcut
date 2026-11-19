@@ -226,3 +226,49 @@ def test_compile_timeline_xfade_without_audio_source(tmp_path: Path):
     meta = probe(Path(path))
     assert meta["duration"] == pytest.approx(4.5, abs=0.4)
     assert meta["width"] > 0
+
+
+def test_compile_timeline_animated_zoom_renders_cleanly_at_edges(tmp_path: Path):
+    """Aito FFmpeg: animoitu (inkrementaalinen) zoomaus kuvan reunaan ilman virheitä."""
+    src = tmp_path / "src.mp4"
+    out = tmp_path / "animated_zoom.mp4"
+    _make_testsrc(src, duration=4.0, size="1280x720")
+
+    tl = Timeline(
+        sources={
+            "src1": VideoSource(
+                id="src1",
+                path=str(src),
+                duration=4.0,
+                width=1280,
+                height=720,
+                fps=30.0,
+                has_audio=True,
+            )
+        },
+        clips=[
+            Clip(
+                id="c0",
+                source_id="src1",
+                in_sec=0.0,
+                out_sec=4.0,
+                effects=[
+                    ZoomEffect(
+                        start_sec=0.5,
+                        duration=2.5,
+                        target_x=0.05,
+                        target_y=0.95,
+                        zoom_factor=2.2,
+                        animated=True,
+                    )
+                ],
+            )
+        ],
+        output_fps=30,
+    )
+    result = compile_timeline(tl, out, mode="preview")
+    assert Path(result).is_file()
+    assert Path(result).stat().st_size > 1000
+    meta = probe(Path(result))
+    assert meta["duration"] == pytest.approx(4.0, abs=0.35)
+    assert meta["width"] > 0 and meta["height"] > 0

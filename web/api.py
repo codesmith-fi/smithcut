@@ -58,6 +58,7 @@ class EffectRequest(BaseModel):
     target_x: Optional[float] = None
     target_y: Optional[float] = None
     zoom_factor: float = 1.8
+    animated: bool = False
     text: Optional[str] = None
     position: str = "bottom"
     font_style: Literal["clean", "cinema", "mono", "impact"] = "clean"
@@ -507,6 +508,7 @@ def create_app(
                     target_x=body.target_x,
                     target_y=body.target_y,
                     zoom_factor=body.zoom_factor,
+                    animated=body.animated,
                 )
             elif body.action == "text":
                 if body.clip_index is None or not body.text:

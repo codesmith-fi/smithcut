@@ -27,6 +27,7 @@ class ZoomEffect(BaseModel):
     target_x: float = Field(ge=0.0, le=1.0)
     target_y: float = Field(ge=0.0, le=1.0)
     zoom_factor: float = Field(ge=1.1, le=4.0)
+    animated: bool = False
 
 
 FontStyle = Literal["clean", "cinema", "mono", "impact"]

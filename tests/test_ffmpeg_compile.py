@@ -232,3 +232,42 @@ def test_silent_source_uses_anullsrc():
     )
     fc = build_filter_complex(tl)
     assert "anullsrc=" in fc
+
+
+def test_animated_zoom_generates_smooth_interpolation_and_clip_bounds():
+    src = VideoSource(
+        id="src1",
+        path="/videos/a.mp4",
+        duration=10.0,
+        width=1920,
+        height=1080,
+        fps=30.0,
+        has_audio=True,
+    )
+    tl = Timeline(
+        sources={"src1": src},
+        clips=[
+            Clip(
+                id="c0",
+                source_id="src1",
+                in_sec=0.0,
+                out_sec=6.0,
+                effects=[
+                    ZoomEffect(
+                        start_sec=1.0,
+                        duration=3.0,
+                        target_x=0.95,
+                        target_y=0.05,
+                        zoom_factor=2.2,
+                        animated=True,
+                    )
+                ],
+            )
+        ],
+        output_fps=30,
+    )
+    fc = build_filter_complex(tl, mode="preview")
+    assert "zoompan=" in fc
+    assert "cos(PI*" in fc
+    assert "clip(0.95*iw-(iw/zoom/2)" in fc
+    assert "clip(0.05*ih-(ih/zoom/2)" in fc

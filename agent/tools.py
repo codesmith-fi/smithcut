@@ -126,6 +126,13 @@ OLLAMA_TOOLS: list[dict[str, Any]] = [
                     "target_x": {"type": "number"},
                     "target_y": {"type": "number"},
                     "zoom_factor": {"type": "number"},
+                    "animated": {
+                        "type": "boolean",
+                        "description": (
+                            "If true, smoothly animate zoom from 1.0 to zoom_factor "
+                            "over duration (incremental/gradual zoom)."
+                        ),
+                    },
                 },
                 "required": ["clip_index", "start_sec", "duration"],
             },
@@ -656,6 +663,7 @@ def execute_tool(
                 target_x=args.get("target_x"),
                 target_y=args.get("target_y"),
                 zoom_factor=_opt_float(args, "zoom_factor", 1.8),
+                animated=bool(args.get("animated") or False),
             )
             return _dump(effect), changed
 

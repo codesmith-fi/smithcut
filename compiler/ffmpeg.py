@@ -351,10 +351,20 @@ def _effect_filters(clip: Clip, width: int, height: int, fps: int) -> list[str]:
             z = effect.zoom_factor
             tx, ty = effect.target_x, effect.target_y
             start = effect.start_sec
-            end = effect.start_sec + effect.duration
-            z_expr = f"if(between(on/{fps}\\,{start}\\,{end})\\,{z}\\,1)"
-            x_expr = f"iw/2-(iw/zoom/2)+({tx}-0.5)*(iw-iw/zoom)"
-            y_expr = f"ih/2-(ih/zoom/2)+({ty}-0.5)*(ih-ih/zoom)"
+            dur = effect.duration
+            end = start + dur
+            if effect.animated:
+                # Tasainen ease-in-out -interpolaatio (1.0 → z) ajan suhteen
+                progress = f"(on/{fps}-{start})/{dur}"
+                z_expr = (
+                    f"if(between(on/{fps}\\,{start}\\,{end})\\,"
+                    f"1+({z}-1)*(1-cos(PI*{progress}))/2\\,1)"
+                )
+            else:
+                z_expr = f"if(between(on/{fps}\\,{start}\\,{end})\\,{z}\\,1)"
+            # Rajaa crop-ikkuna aina kuvan sisälle (ei virheitä reunoilla)
+            x_expr = f"clip({tx}*iw-(iw/zoom/2)\\,0\\,iw-iw/zoom)"
+            y_expr = f"clip({ty}*ih-(ih/zoom/2)\\,0\\,ih-ih/zoom)"
             parts.append(
                 f"zoompan=z='{z_expr}':x='{x_expr}':y='{y_expr}'"
                 f":d=1:s={width}x{height}:fps={fps}"

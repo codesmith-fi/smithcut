@@ -476,6 +476,7 @@ class EditorController:
         target_x: float | None = None,
         target_y: float | None = None,
         zoom_factor: float = 1.8,
+        animated: bool = False,
     ) -> ZoomEffect:
         with self._persist_batch():
             clip = self._clip(clip_index)
@@ -492,6 +493,7 @@ class EditorController:
                 target_x=target_x,
                 target_y=target_y,
                 zoom_factor=zoom_factor,
+                animated=bool(animated),
             )
             if effect.start_sec + effect.duration > clip.duration + 1e-9:
                 raise ValueError("zoom effect exceeds clip duration")
