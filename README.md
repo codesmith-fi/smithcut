@@ -11,7 +11,8 @@ Open source - Free - MIT LICENSE
 - **Natural Language Editing:** Cut scenes, split clips at timestamps or the playhead marker, apply transitions, and manage audio tracks in English or Finnish.
 - **Non-Destructive Timeline:** All edits are persisted in a lightweight JSON project state (`workspace/project_state.json`) without modifying original source media files.
 - **Precision Range Selection:** Highlight exact ranges directly on the timeline (`Shift + drag`) to target cuts, blur transitions, or crossfades across clip boundaries.
-- **Transitions & Effects:** Seamless boundary crossfades (`xfade` / `acrossfade`) and stepped focus-in/focus-out blur transitions (`gblur`).
+- **Transitions & Effects:** Seamless boundary crossfades (`xfade` / `acrossfade`), smooth animated (incremental) zoom, and static or progressive blur effects (`gblur` + alpha crossfade).
+- **Visual Object Targeting (VLM):** Locate visible objects or UI elements on a video frame using a local vision model (`qwen2.5vl:3b`) and chain object-targeted animated zoom with progressive blur in a single prompt.
 - **Independent Audio Track Control:** Detach or mute the original video audio track, edit video cuts and crossfades freely without audio glitches, and attach a continuous audio track across the entire timeline.
 - **Separate Audio Timeline:** Detach video audio onto its own `audio_clips` lane so picture and sound can be cut, moved, and leveled independently (J-cuts / L-cuts).
 - **Timeline Fade In / Fade Out:** Apply whole-timeline fades from/to black on both video and audio (e.g. *"Tee videon alkuun 5 sekunnin fade in ja videon loppuun sama 5 sekunnin fade out"*).
@@ -124,8 +125,8 @@ Open **[http://localhost:8000](http://localhost:8000)** in your browser.
    - *"Erota videosta ääni omalle raidalleen"* → cut/move audio alone (*"Siirrä ääniklippi 2 alkamaan kohdasta 0:08"*, *"Laske ääniraidan voimakkuus puoleen"*).
 7. **Timeline Fade In / Out:**
    - *"Tee videon alkuun 5 sekunnin fade in ja videon loppuun sama 5 sekunnin fade out"* or *"Lisää 3 sekunnin loppuhäivytys"*.
-8. **Visual Object Targeting (VLM):**
-   - Requires `ollama pull qwen2.5vl:3b`. Ask CutSmith to zoom into a visible object or UI element by name: *"Zoomaa alukseen"* or *"Zoom into the red rose at 2:30"*.
+8. **Visual Object Targeting, Animated Zoom & Progressive Blur (VLM):**
+   - Requires `ollama pull qwen2.5vl:3b`. Chain object localization, smooth incremental zoom, and progressive blur in a single prompt: *"At 0:40, locate the ship in the middle, apply an incremental zoom between 0:40 and 0:45, and blur the video towards the end"* (or *"Zoomaa alukseen kohdassa 0:40, tee tasainen zoomaus 0:40–0:45 ja blurraa video kohti loppua"*).
 
 ---
 
