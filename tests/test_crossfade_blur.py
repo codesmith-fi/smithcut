@@ -180,3 +180,29 @@ def test_execute_tool_crossfade_and_blur(two_clip_editor: EditorController):
 
 def test_strip_think_tags_again():
     assert strip_think_tags("<think>x</think>Valmis.</think>") == "Valmis."
+
+
+def test_add_blur_tool_fade_in_and_undo(two_clip_editor: EditorController):
+    import json
+
+    editor = two_clip_editor
+    text, changed = execute_tool(
+        editor,
+        "add_blur",
+        {
+            "clip_index": 1,
+            "start_sec": 6.0,
+            "strength": 15.0,
+            "mode": "fade_in",
+        },
+    )
+    assert changed is True
+    data = json.loads(text)
+    assert data["mode"] == "fade_in"
+    assert data["strength"] == pytest.approx(15.0)
+    assert data["end_sec"] is None
+    assert len(editor.timeline.clips[0].effects) == 1
+
+    # Undo poistaa lisätyn blur-efektin
+    assert editor.undo() is True
+    assert editor.timeline.clips[0].effects == []

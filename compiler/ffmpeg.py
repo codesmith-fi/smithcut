@@ -303,15 +303,24 @@ def _clip_input_paths(timeline: Timeline) -> list[str]:
     return [timeline.sources[c.source_id].path for c in timeline.clips]
 
 
-def _gblur_step_filters(effect: BlurEffect, *, steps: int = 5) -> list[str]:
+def _gblur_step_filters(
+    effect: BlurEffect,
+    *,
+    steps: int = 5,
+    clip_duration: float | None = None,
+) -> list[str]:
     """Portaittainen gblur focus-in / hold / focus-out (enable=between)."""
     start = float(effect.start_sec)
-    end = float(effect.end_sec)
+    end = (
+        float(effect.end_sec)
+        if effect.end_sec is not None
+        else float(clip_duration or 0.0)
+    )
     span = end - start
     if span <= 1e-9:
         return []
     fade = min(float(effect.fade_sec), span / 2.0)
-    max_sigma = float(effect.max_sigma)
+    max_sigma = effect.effective_sigma
     steps = max(1, int(steps))
     parts: list[str] = []
 
@@ -344,49 +353,91 @@ def _gblur_step_filters(effect: BlurEffect, *, steps: int = 5) -> list[str]:
     return parts
 
 
-def _effect_filters(clip: Clip, width: int, height: int, fps: int) -> list[str]:
-    parts: list[str] = []
-    for effect in clip.effects:
-        if isinstance(effect, ZoomEffect):
-            z = effect.zoom_factor
-            tx, ty = effect.target_x, effect.target_y
-            start = effect.start_sec
-            dur = effect.duration
-            end = start + dur
-            if effect.animated:
-                # Tasainen ease-in-out -interpolaatio (1.0 → z) ajan suhteen
-                progress = f"(on/{fps}-{start})/{dur}"
-                z_expr = (
-                    f"if(between(on/{fps}\\,{start}\\,{end})\\,"
-                    f"1+({z}-1)*(1-cos(PI*{progress}))/2\\,1)"
-                )
-            else:
-                z_expr = f"if(between(on/{fps}\\,{start}\\,{end})\\,{z}\\,1)"
-            # Rajaa crop-ikkuna aina kuvan sisälle (ei virheitä reunoilla)
-            x_expr = f"clip({tx}*iw-(iw/zoom/2)\\,0\\,iw-iw/zoom)"
-            y_expr = f"clip({ty}*ih-(ih/zoom/2)\\,0\\,ih-ih/zoom)"
-            parts.append(
-                f"zoompan=z='{z_expr}':x='{x_expr}':y='{y_expr}'"
-                f":d=1:s={width}x{height}:fps={fps}"
+def _fade_blur_branch(
+    effect: BlurEffect,
+    in_label: str,
+    out_label: str,
+    branch_prefix: str,
+    clip_duration: float,
+) -> list[str]:
+    """Ristiinhäivytetty asteittainen blur (split → gblur + fade:alpha=1 → overlay)."""
+    start = float(effect.start_sec)
+    end = float(effect.end_sec) if effect.end_sec is not None else float(clip_duration)
+    dur = max(end - start, 1e-3)
+    sigma = effect.effective_sigma
+    fade_type = "in" if effect.mode == "fade_in" else "out"
+
+    orig = f"{branch_prefix}_orig"
+    src = f"{branch_prefix}_src"
+    blurred = f"{branch_prefix}_blur"
+
+    # fade_out: näytä overlay vain välillä [start, end] (terävä ennen startia)
+    # fade_in: jos end < clip_duration, rajoita overlay välille [start, end]
+    overlay_enable = ""
+    if effect.mode == "fade_out" or end < clip_duration - 1e-3:
+        overlay_enable = f":enable='between(t\\,{start:.6f}\\,{end:.6f})'"
+
+    return [
+        f"[{in_label}]split=2[{orig}][{src}]",
+        (
+            f"[{src}]gblur=sigma={sigma:.3f},format=yuva420p,"
+            f"fade=t={fade_type}:st={start:.6f}:d={dur:.6f}:alpha=1[{blurred}]"
+        ),
+        (
+            f"[{orig}][{blurred}]overlay=eof_action=pass:shortest=1"
+            f"{overlay_enable},format=yuv420p[{out_label}]"
+        ),
+    ]
+
+
+def _linear_effect_filters(effect, clip_duration: float, width: int, height: int, fps: int) -> list[str]:
+    if isinstance(effect, ZoomEffect):
+        z = effect.zoom_factor
+        tx, ty = effect.target_x, effect.target_y
+        start = effect.start_sec
+        dur = effect.duration
+        end = start + dur
+        if effect.animated:
+            # Tasainen ease-in-out -interpolaatio (1.0 → z) ajan suhteen
+            progress = f"(on/{fps}-{start})/{dur}"
+            z_expr = (
+                f"if(between(on/{fps}\\,{start}\\,{end})\\,"
+                f"1+({z}-1)*(1-cos(PI*{progress}))/2\\,1)"
             )
-        elif isinstance(effect, TextEffect):
-            x, y = _text_xy(effect.position)
-            text = _escape_drawtext(effect.text)
-            enable = (
-                f"between(t\\,{effect.start_sec}\\,"
-                f"{effect.start_sec + effect.duration})"
-            )
-            draw = (
-                f"drawtext=text='{text}':fontsize={effect.font_size}"
-                f":fontcolor={effect.color}:x={x}:y={y}:enable='{enable}'"
-            )
-            font_path = resolve_font_file(effect.font_style)
-            if font_path:
-                draw += f":fontfile='{_escape_fontfile(font_path)}'"
-            parts.append(draw)
-        elif isinstance(effect, BlurEffect):
-            parts.extend(_gblur_step_filters(effect))
-    return parts
+        else:
+            z_expr = f"if(between(on/{fps}\\,{start}\\,{end})\\,{z}\\,1)"
+        # Rajaa crop-ikkuna aina kuvan sisälle (ei virheitä reunoilla)
+        x_expr = f"clip({tx}*iw-(iw/zoom/2)\\,0\\,iw-iw/zoom)"
+        y_expr = f"clip({ty}*ih-(ih/zoom/2)\\,0\\,ih-ih/zoom)"
+        return [
+            f"zoompan=z='{z_expr}':x='{x_expr}':y='{y_expr}'"
+            f":d=1:s={width}x{height}:fps={fps}"
+        ]
+    if isinstance(effect, TextEffect):
+        x, y = _text_xy(effect.position)
+        text = _escape_drawtext(effect.text)
+        enable = (
+            f"between(t\\,{effect.start_sec}\\,"
+            f"{effect.start_sec + effect.duration})"
+        )
+        draw = (
+            f"drawtext=text='{text}':fontsize={effect.font_size}"
+            f":fontcolor={effect.color}:x={x}:y={y}:enable='{enable}'"
+        )
+        font_path = resolve_font_file(effect.font_style)
+        if font_path:
+            draw += f":fontfile='{_escape_fontfile(font_path)}'"
+        return [draw]
+    if isinstance(effect, BlurEffect):
+        end = float(effect.end_sec) if effect.end_sec is not None else float(clip_duration)
+        if effect.mode == "static":
+            sigma = effect.effective_sigma
+            return [
+                f"gblur=sigma={sigma:.3f}:"
+                f"enable='between(t\\,{effect.start_sec:.6f}\\,{end:.6f})'"
+            ]
+        return _gblur_step_filters(effect, clip_duration=clip_duration)
+    return []
 
 
 def _clip_video_filter(
@@ -404,27 +455,72 @@ def _clip_video_filter(
         trim_expr = f"[{input_index}:v]trim=start=0:end={clip.source_duration:.6f}"
     else:
         trim_expr = f"[{input_index}:v]trim=start={clip.in_sec}:end={clip.out_sec}"
-    parts = [
+    base_parts = [
         trim_expr,
         "setpts=PTS-STARTPTS",
     ]
     if clip.speed != 1.0:
-        parts.append(f"setpts=PTS/{clip.speed}")
-    parts.append(f"fps={fps}")
+        base_parts.append(f"setpts=PTS/{clip.speed}")
+    base_parts.append(f"fps={fps}")
     # Preview & export: sama pad-logiikka (pad >= skaalattu kuva).
-    # Älä käytä erillistä scale=-2:H + trunc + pad=W:H -yhdistelmää:
-    # scale=-2:480 voi tuottaa leveämmän kuvan kuin _output_size → pad failaa.
-    parts.extend(
+    base_parts.extend(
         [
             f"scale={width}:{height}:force_original_aspect_ratio=decrease",
             f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2",
+            "setsar=1",
+            "format=yuv420p",
         ]
     )
-    parts.extend(["setsar=1", "format=yuv420p"])
-    parts.extend(_effect_filters(clip, width, height, fps))
-    # Yhtenäinen aikakanta + formaatti ennen xfade/concat
-    parts.extend([f"fps={fps}", "format=yuv420p", "setpts=PTS-STARTPTS"])
-    return ",".join(parts) + f"[{out_label}]"
+
+    has_branching_blur = any(
+        isinstance(e, BlurEffect) and e.mode in ("fade_in", "fade_out")
+        for e in clip.effects
+    )
+    if not has_branching_blur:
+        for effect in clip.effects:
+            base_parts.extend(
+                _linear_effect_filters(effect, clip.duration, width, height, fps)
+            )
+        base_parts.extend([f"fps={fps}", "format=yuv420p", "setpts=PTS-STARTPTS"])
+        return ",".join(base_parts) + f"[{out_label}]"
+
+    # Haaroittuva graafi (split + gblur + alpha-fade + overlay)
+    chains: list[str] = []
+    pending_linear: list[str] = list(base_parts)
+    branch_idx = 0
+    cur_label: str | None = None
+
+    for effect in clip.effects:
+        if isinstance(effect, BlurEffect) and effect.mode in ("fade_in", "fade_out"):
+            pre_label = f"{out_label}_b{branch_idx}_in"
+            if cur_label is None:
+                chains.append(",".join(pending_linear) + f"[{pre_label}]")
+            elif pending_linear:
+                chains.append(f"[{cur_label}]" + ",".join(pending_linear) + f"[{pre_label}]")
+            else:
+                pre_label = cur_label
+            pending_linear = []
+            post_label = f"{out_label}_b{branch_idx}_out"
+            chains.extend(
+                _fade_blur_branch(
+                    effect,
+                    pre_label,
+                    post_label,
+                    f"{out_label}_b{branch_idx}",
+                    clip.duration,
+                )
+            )
+            cur_label = post_label
+            branch_idx += 1
+        else:
+            pending_linear.extend(
+                _linear_effect_filters(effect, clip.duration, width, height, fps)
+            )
+
+    tail = [*pending_linear, f"fps={fps}", "format=yuv420p", "setpts=PTS-STARTPTS"]
+    assert cur_label is not None
+    chains.append(f"[{cur_label}]" + ",".join(tail) + f"[{out_label}]")
+    return ";\n".join(chains)
 
 
 def _silence_audio_filter(duration: float, out_label: str) -> str:

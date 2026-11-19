@@ -534,6 +534,47 @@ class EditorController:
             self.timeline.clips[clip_index] = updated
             return effect
 
+    def add_blur(
+        self,
+        clip_index: int,
+        start_sec: float,
+        end_sec: float | None = None,
+        *,
+        strength: float = 12.0,
+        mode: str = "static",
+    ) -> BlurEffect:
+        """Lisää staattinen tai asteittainen blur-efekti klipille (Undo/Redo-tuettu)."""
+        with self._persist_batch():
+            clip = self._clip(clip_index)
+            allowed_modes = {"static", "fade_in", "fade_out"}
+            if mode not in allowed_modes:
+                raise ValueError(
+                    f"invalid blur mode {mode!r}; expected one of {sorted(allowed_modes)}"
+                )
+            start = float(start_sec)
+            if start < 0 or start >= clip.duration - 1e-9:
+                raise ValueError(
+                    f"blur start_sec {start} must be within [0, {clip.duration})"
+                )
+            end = float(end_sec) if end_sec is not None else None
+            if end is not None and end > clip.duration + 1e-9:
+                raise ValueError("blur effect exceeds clip duration")
+            sigma = float(strength)
+            if sigma < 1.0 or sigma > 30.0:
+                raise ValueError("blur strength must be between 1.0 and 30.0")
+
+            effect = BlurEffect(
+                start_sec=start,
+                end_sec=end,
+                strength=sigma,
+                max_sigma=sigma,
+                mode=mode,  # type: ignore[arg-type]
+            )
+            self._checkpoint()
+            updated = clip.model_copy(update={"effects": [*clip.effects, effect]})
+            self.timeline.clips[clip_index] = updated
+            return effect
+
     def add_blur_effect(
         self,
         clip_index: int,
@@ -1127,7 +1168,10 @@ class EditorController:
         span = local_end - local_start
         for effect in clip.effects:
             e_start = effect.start_sec
-            e_end = effect.start_sec + effect.duration
+            if isinstance(effect, BlurEffect) and effect.end_sec is None:
+                e_end = clip.duration
+            else:
+                e_end = effect.start_sec + effect.duration
             if e_end <= local_start + 1e-9 or e_start >= local_end - 1e-9:
                 continue
             new_start = max(0.0, e_start - local_start)

@@ -341,6 +341,43 @@ OLLAMA_TOOLS: list[dict[str, Any]] = [
     {
         "type": "function",
         "function": {
+            "name": "add_blur",
+            "description": (
+                "Add a static or progressive (fade_in / fade_out) blur effect to a "
+                "clip. clip_index is 1-based. Omit end_sec to blur until the clip end. "
+                "Use mode='fade_in' for 'blurraa video kohti loppua' / 'gradually blur "
+                "towards the end', mode='fade_out' to sharpen from blur, or "
+                "mode='static' for constant blur."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "clip_index": {"type": "integer", "minimum": 1},
+                    "start_sec": {
+                        "type": "number",
+                        "description": "Start time in seconds from clip start.",
+                    },
+                    "end_sec": {
+                        "type": "number",
+                        "description": "Optional end time in seconds from clip start (defaults to clip end).",
+                    },
+                    "strength": {
+                        "type": "number",
+                        "description": "Blur strength (gblur sigma, 1.0–30.0, default 12.0).",
+                    },
+                    "mode": {
+                        "type": "string",
+                        "enum": ["static", "fade_in", "fade_out"],
+                        "description": "static | fade_in (blur increases) | fade_out (blur clears).",
+                    },
+                },
+                "required": ["clip_index", "start_sec"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "add_blur_to_selection",
             "description": (
                 "Add a soft focus-in/out blur (gblur) across the painted "
@@ -830,6 +867,17 @@ def execute_tool(
                     ),
                 }
             ), changed
+
+        if name == "add_blur":
+            end_arg = args.get("end_sec")
+            effect = editor.add_blur(
+                one_to_zero(args["clip_index"], label="clip_index"),
+                start_sec=float(args["start_sec"]),
+                end_sec=None if end_arg is None else float(end_arg),
+                strength=_opt_float(args, "strength", 12.0),
+                mode=str(args.get("mode") or "static"),
+            )
+            return _dump(effect), changed
 
         if name == "add_blur_to_selection":
             effects = editor.add_blur_to_selection(

@@ -145,6 +145,8 @@ def build_state_summary(
                         "start_sec": effect.start_sec,
                         "end_sec": effect.end_sec,
                         "duration": effect.duration,
+                        "strength": effect.effective_sigma,
+                        "mode": effect.mode,
                         "max_sigma": effect.max_sigma,
                         "fade_sec": effect.fade_sec,
                     }

@@ -10,7 +10,15 @@ import pytest
 
 from compiler.ffmpeg import compile_timeline, format_ffmpeg_error
 from compiler.ffprobe import probe
-from model.timeline import Clip, TextEffect, Timeline, Transition, VideoSource, ZoomEffect
+from model.timeline import (
+    BlurEffect,
+    Clip,
+    TextEffect,
+    Timeline,
+    Transition,
+    VideoSource,
+    ZoomEffect,
+)
 
 ffmpeg_bin = shutil.which("ffmpeg")
 pytestmark = pytest.mark.skipif(ffmpeg_bin is None, reason="ffmpeg not installed")
@@ -261,6 +269,58 @@ def test_compile_timeline_animated_zoom_renders_cleanly_at_edges(tmp_path: Path)
                         zoom_factor=2.2,
                         animated=True,
                     )
+                ],
+            )
+        ],
+        output_fps=30,
+    )
+    result = compile_timeline(tl, out, mode="preview")
+    assert Path(result).is_file()
+    assert Path(result).stat().st_size > 1000
+    meta = probe(Path(result))
+    assert meta["duration"] == pytest.approx(4.0, abs=0.35)
+    assert meta["width"] > 0 and meta["height"] > 0
+
+
+def test_compile_timeline_progressive_blur_fade_in_renders_cleanly(tmp_path: Path):
+    """Aito FFmpeg: animoitu zoom + asteittainen blur (fade_in) klipin loppuun."""
+    src = tmp_path / "src.mp4"
+    out = tmp_path / "blur_fade_in.mp4"
+    _make_testsrc(src, duration=4.0, size="1280x720")
+
+    tl = Timeline(
+        sources={
+            "src1": VideoSource(
+                id="src1",
+                path=str(src),
+                duration=4.0,
+                width=1280,
+                height=720,
+                fps=30.0,
+                has_audio=True,
+            )
+        },
+        clips=[
+            Clip(
+                id="c0",
+                source_id="src1",
+                in_sec=0.0,
+                out_sec=4.0,
+                effects=[
+                    ZoomEffect(
+                        start_sec=0.5,
+                        duration=2.0,
+                        target_x=0.5,
+                        target_y=0.5,
+                        zoom_factor=1.6,
+                        animated=True,
+                    ),
+                    BlurEffect(
+                        start_sec=1.5,
+                        end_sec=None,
+                        strength=14.0,
+                        mode="fade_in",
+                    ),
                 ],
             )
         ],

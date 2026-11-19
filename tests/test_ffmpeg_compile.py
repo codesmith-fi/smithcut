@@ -17,6 +17,7 @@ from compiler.ffmpeg import (
 )
 from model.timeline import (
     BackgroundMusic,
+    BlurEffect,
     Clip,
     TextEffect,
     Timeline,
@@ -271,3 +272,93 @@ def test_animated_zoom_generates_smooth_interpolation_and_clip_bounds():
     assert "cos(PI*" in fc
     assert "clip(0.95*iw-(iw/zoom/2)" in fc
     assert "clip(0.05*ih-(ih/zoom/2)" in fc
+
+
+def test_blur_effect_static_and_fade_in_filter_graphs():
+    src = VideoSource(
+        id="src1",
+        path="/videos/a.mp4",
+        duration=10.0,
+        width=1280,
+        height=720,
+        fps=30.0,
+        has_audio=True,
+    )
+
+    # 1) Staattinen blur
+    tl_static = Timeline(
+        sources={"src1": src},
+        clips=[
+            Clip(
+                id="c0",
+                source_id="src1",
+                in_sec=0.0,
+                out_sec=6.0,
+                effects=[
+                    BlurEffect(
+                        start_sec=1.0,
+                        end_sec=3.0,
+                        strength=14.0,
+                        mode="static",
+                    )
+                ],
+            )
+        ],
+        output_fps=30,
+    )
+    fc_static = build_filter_complex(tl_static, mode="preview")
+    assert "gblur=sigma=14.000:enable='between(t\\,1.000000\\,3.000000)'" in fc_static
+    assert "split=2" not in fc_static
+
+    # 2) Asteittainen fade_in klipin loppuun (end_sec=None -> 6.0s, dur=4.0s)
+    tl_fade_in = Timeline(
+        sources={"src1": src},
+        clips=[
+            Clip(
+                id="c0",
+                source_id="src1",
+                in_sec=0.0,
+                out_sec=6.0,
+                effects=[
+                    BlurEffect(
+                        start_sec=2.0,
+                        end_sec=None,
+                        strength=16.0,
+                        mode="fade_in",
+                    )
+                ],
+            )
+        ],
+        output_fps=30,
+    )
+    fc_fade = build_filter_complex(tl_fade_in, mode="preview")
+    assert "split=2" in fc_fade
+    assert "gblur=sigma=16.000,format=yuva420p" in fc_fade
+    assert "fade=t=in:st=2.000000:d=4.000000:alpha=1" in fc_fade
+    assert "overlay=eof_action=pass:shortest=1" in fc_fade
+    assert "format=yuv420p" in fc_fade
+
+    # 3) Asteittainen fade_out (selkenee blurrista)
+    tl_fade_out = Timeline(
+        sources={"src1": src},
+        clips=[
+            Clip(
+                id="c0",
+                source_id="src1",
+                in_sec=0.0,
+                out_sec=6.0,
+                effects=[
+                    BlurEffect(
+                        start_sec=0.0,
+                        end_sec=2.0,
+                        strength=10.0,
+                        mode="fade_out",
+                    )
+                ],
+            )
+        ],
+        output_fps=30,
+    )
+    fc_out = build_filter_complex(tl_fade_out, mode="preview")
+    assert "fade=t=out:st=0.000000:d=2.000000:alpha=1" in fc_out
+    assert "enable='between(t\\,0.000000\\,2.000000)'" in fc_out

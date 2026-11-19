@@ -51,23 +51,34 @@ class TextEffect(BaseModel):
         return value
 
 
+BlurMode = Literal["focus", "static", "fade_in", "fade_out"]
+
+
 class BlurEffect(BaseModel):
-    """Pehmeä focus-in/out -sumennus klipin aikavälillä."""
+    """Sumennus klipin aikavälillä (static, fade_in, fade_out tai portaittainen focus)."""
 
     type: Literal["blur"] = "blur"
     start_sec: float = Field(ge=0)
-    end_sec: float = Field(gt=0)
+    end_sec: Optional[float] = Field(default=None, gt=0)
+    strength: Optional[float] = Field(default=None, ge=1.0, le=50.0)
+    mode: BlurMode = "focus"
     max_sigma: float = Field(default=18.0, gt=0.0, le=50.0)
     fade_sec: float = Field(default=0.6, gt=0.0)
 
     @model_validator(mode="after")
     def validate_blur_range(self) -> BlurEffect:
-        if self.end_sec <= self.start_sec:
+        if self.end_sec is not None and self.end_sec <= self.start_sec:
             raise ValueError("end_sec must be greater than start_sec")
         return self
 
     @property
+    def effective_sigma(self) -> float:
+        return float(self.strength) if self.strength is not None else float(self.max_sigma)
+
+    @property
     def duration(self) -> float:
+        if self.end_sec is None:
+            return 0.0
         return self.end_sec - self.start_sec
 
 
@@ -90,6 +101,13 @@ class Clip(BaseModel):
             raise ValueError("out_sec must be greater than in_sec")
         clip_dur = self.duration
         for effect in self.effects:
+            if isinstance(effect, BlurEffect) and effect.end_sec is None:
+                if effect.start_sec >= clip_dur - 1e-9:
+                    raise ValueError(
+                        f"blur effect start_sec ({effect.start_sec:.3f}s) "
+                        f"must be before clip end ({clip_dur:.3f}s)"
+                    )
+                continue
             if effect.start_sec + effect.duration > clip_dur + 1e-9:
                 raise ValueError(
                     f"effect exceeds clip duration "
