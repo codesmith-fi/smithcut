@@ -95,7 +95,7 @@ def test_execute_tool_crossfade_clip_index_duration(
     text, changed = execute_tool(
         editor,
         "apply_crossfade_to_selection",
-        {"clip_index": 0, "duration_sec": 4.0},
+        {"clip_index": 1, "duration_sec": 4.0},
     )
     assert changed is True
     assert editor.timeline.transitions[0].duration == pytest.approx(4.0)
@@ -114,7 +114,7 @@ def test_system_prompt_documents_verbal_crossfade():
             "selection_end_sec": None,
         },
     )
-    assert "clip_index=0" in prompt
+    assert "clip_index=1" in prompt
     assert "duration_sec=10.0" in prompt or "2*N" in prompt
     assert "clippien 1 ja 2" in prompt.lower() or "clips 1 and 2" in prompt.lower()
 

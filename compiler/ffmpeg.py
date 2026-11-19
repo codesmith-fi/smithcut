@@ -298,18 +298,6 @@ def is_simple_preview_timeline(timeline: Timeline) -> bool:
     )
 
 
-def _source_input_map(timeline: Timeline) -> tuple[list[str], dict[str, int]]:
-    """Uniikit lähdepolut (vanha API / yksinkertaiset polut)."""
-    paths: list[str] = []
-    index_by_id: dict[str, int] = {}
-    for source_id, source in timeline.sources.items():
-        if any(c.source_id == source_id for c in timeline.clips):
-            if source.path not in paths:
-                paths.append(source.path)
-            index_by_id[source_id] = paths.index(source.path)
-    return paths, index_by_id
-
-
 def _clip_input_paths(timeline: Timeline) -> list[str]:
     """Yksi FFmpeg-input per klippi (sama tiedosto saa toistua) – vakaa xfade."""
     return [timeline.sources[c.source_id].path for c in timeline.clips]
@@ -400,9 +388,14 @@ def _clip_video_filter(
     fps: int,
     *,
     profile: RenderProfile = "preview",
+    input_seek: bool = False,
 ) -> str:
+    if input_seek:
+        trim_expr = f"[{input_index}:v]trim=start=0:end={clip.source_duration:.6f}"
+    else:
+        trim_expr = f"[{input_index}:v]trim=start={clip.in_sec}:end={clip.out_sec}"
     parts = [
-        f"[{input_index}:v]trim=start={clip.in_sec}:end={clip.out_sec}",
+        trim_expr,
         "setpts=PTS-STARTPTS",
     ]
     if clip.speed != 1.0:
@@ -440,12 +433,18 @@ def _clip_audio_filter(
     source: VideoSource,
     input_index: int,
     out_label: str,
+    *,
+    input_seek: bool = False,
 ) -> str:
     if not source.has_audio:
         return _silence_audio_filter(clip.duration, out_label)
 
+    if input_seek:
+        atrim_expr = f"[{input_index}:a]atrim=start=0:end={clip.source_duration:.6f}"
+    else:
+        atrim_expr = f"[{input_index}:a]atrim=start={clip.in_sec}:end={clip.out_sec}"
     parts = [
-        f"[{input_index}:a]atrim=start={clip.in_sec}:end={clip.out_sec}",
+        atrim_expr,
         "asetpts=PTS-STARTPTS",
     ]
     if clip.speed != 1.0:
@@ -501,7 +500,12 @@ def _audio_clip_filter(
     return ",".join(parts) + f"[{out_label}]"
 
 
-def build_filter_complex(timeline: Timeline, mode: RenderMode | str = "preview") -> str:
+def build_filter_complex(
+    timeline: Timeline,
+    mode: RenderMode | str = "preview",
+    *,
+    input_seek: bool = False,
+) -> str:
     """Käännä Timeline deterministiseksi filter_complex -merkkijonoksi."""
     validate_timeline(timeline)
     profile = normalize_render_mode(mode)
@@ -531,13 +535,24 @@ def build_filter_complex(timeline: Timeline, mode: RenderMode | str = "preview")
         v_out = f"v{i}"
         lines.append(
             _clip_video_filter(
-                clip, inp, v_out, width, height, fps, profile=profile
+                clip,
+                inp,
+                v_out,
+                width,
+                height,
+                fps,
+                profile=profile,
+                input_seek=input_seek,
             )
         )
         video_labels.append(v_out)
         if use_clip_audio:
             a_out = f"a{i}"
-            lines.append(_clip_audio_filter(clip, source, inp, a_out))
+            lines.append(
+                _clip_audio_filter(
+                    clip, source, inp, a_out, input_seek=input_seek
+                )
+            )
             audio_labels.append(a_out)
 
     current_v = video_labels[0]
@@ -734,12 +749,15 @@ def build_command(
     """Rakenna täydellinen ffmpeg-komento listana (preview | export/final)."""
     validate_timeline(timeline)
     profile = normalize_render_mode(mode)
-    clip_paths = _clip_input_paths(timeline)
-    filter_complex = build_filter_complex(timeline, mode=profile)
+    filter_complex = build_filter_complex(timeline, mode=profile, input_seek=True)
 
     cmd: list[str] = ["ffmpeg", "-y", "-hide_banner"]
-    for path in clip_paths:
-        cmd.extend(["-i", path])
+    for clip in timeline.clips:
+        path = timeline.sources[clip.source_id].path
+        # Nopea input-tason haku: vältä lähteen dekoodaus 0:00:sta joka klipille
+        if clip.in_sec > 0:
+            cmd.extend(["-ss", f"{clip.in_sec:.6f}"])
+        cmd.extend(["-t", f"{clip.source_duration:.6f}", "-i", path])
     for path in _extra_audio_inputs(timeline):
         cmd.extend(["-i", path])
 

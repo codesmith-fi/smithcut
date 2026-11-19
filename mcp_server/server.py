@@ -187,6 +187,17 @@ def create_mcp_server(
         )
 
     @server.tool(
+        name="remove_transition",
+        description=(
+            "Remove transition after a clip (restore hard cut). "
+            "after_clip is 1-based (1 = between clips 1 and 2)."
+        )
+        + _INDEX_HINT,
+    )
+    def remove_transition(after_clip: int) -> str:
+        return _run("remove_transition", {"after_clip": after_clip})
+
+    @server.tool(
         name="set_music",
         description="Set background music from a local file path.",
     )
@@ -239,13 +250,14 @@ def create_mcp_server(
         name="apply_crossfade_to_selection",
         description=(
             "Apply a crossfade between two clips. "
-            "clip_index is 0-based (0 = seam between clip 1 and 2). "
+            "clip_index is 1-based (1 = seam between clip 1 and 2). "
             "Pass duration_sec + clip_index for verbal requests without a "
             "painted selection. Duration defaults to selection length when "
             "a range is painted. "
             "Use for 'Tee valitulle alueelle crossfade' / "
             "'Valitse clip1 lopusta ja clip 2 alusta 5 sekuntia ja tee crossfade'."
-        ),
+        )
+        + _INDEX_HINT,
     )
     def apply_crossfade_to_selection(
         transition_type: str = "fade",

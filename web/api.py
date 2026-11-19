@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import mimetypes
 import re
+import threading
 import uuid
 from pathlib import Path
 from typing import Any, Literal, Optional
@@ -13,6 +14,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from fastapi import FastAPI, File, Form, HTTPException, Query, Request, UploadFile
+from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
@@ -22,6 +24,7 @@ from controller.editor import EditorController, chat_stub_reply, normalize_lang
 ROOT = Path(__file__).resolve().parent.parent
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 DEFAULT_WORKSPACE = ROOT / "workspace"
+UPLOAD_CHUNK_SIZE = 1024 * 1024  # 1 Mt striimauspala
 
 VIDEO_EXTENSIONS = {".mp4", ".mov", ".mkv", ".webm", ".avi", ".m4v"}
 AUDIO_EXTENSIONS = {".mp3", ".wav", ".aac", ".m4a", ".ogg", ".flac"}
@@ -46,7 +49,7 @@ class ClipRequest(BaseModel):
 
 
 class EffectRequest(BaseModel):
-    action: Literal["zoom", "text", "transition"]
+    action: Literal["zoom", "text", "transition", "remove_transition"]
     clip_index: Optional[int] = Field(default=None, ge=1)
     after_clip: Optional[int] = Field(default=None, ge=1)
     start_sec: float = 0.0
@@ -183,6 +186,16 @@ def create_app(
     app = FastAPI(title="CutSmith", version="0.2.0")
     app.state.editor = ctrl
     app.state.workspace = Path(ctrl.workspace)
+    app.state.chat_history: list[dict[str, str]] = []
+    app.state.chat_lock = threading.Lock()
+
+    @app.middleware("http")
+    async def _no_cache_static(request: Request, call_next):
+        response = await call_next(request)
+        path = request.url.path
+        if path in ("/", "/index.html") or path.endswith((".css", ".js")):
+            response.headers["Cache-Control"] = "no-cache, must-revalidate"
+        return response
 
     def get_editor() -> EditorController:
         return app.state.editor
@@ -279,11 +292,6 @@ def create_app(
         suffix = Path(safe).suffix.lower()
         dest = workspace / f"{stem}_{uuid.uuid4().hex[:8]}{suffix}"
 
-        data = await file.read()
-        if not data:
-            raise HTTPException(status_code=400, detail="Empty file")
-        dest.write_bytes(data)
-
         inferred = kind
         if inferred == "auto":
             if suffix in AUDIO_EXTENSIONS:
@@ -302,25 +310,47 @@ def create_app(
                         detail="Unknown file type – use video or audio",
                     )
 
+        total_bytes = 0
+        try:
+            with dest.open("wb") as out_fh:
+                while True:
+                    chunk = await file.read(UPLOAD_CHUNK_SIZE)
+                    if not chunk:
+                        break
+                    total_bytes += len(chunk)
+                    out_fh.write(chunk)
+        except Exception:
+            dest.unlink(missing_ok=True)
+            raise
+
+        if total_bytes == 0:
+            dest.unlink(missing_ok=True)
+            raise HTTPException(status_code=400, detail="Empty file")
+
         try:
             if inferred == "music":
-                music = editor.set_music(str(dest))
+                music = await run_in_threadpool(editor.set_music, str(dest))
+                state = await run_in_threadpool(_state_payload, editor, code)
                 return {
                     "ok": True,
                     "kind": "music",
                     "music": music.model_dump(),
-                    "state": _state_payload(editor, lang=code),
+                    "state": state,
                 }
 
-            source = editor.import_video(str(dest))
-            # Automaattisesti koko lähde klipiksi – ei-insinöörin UX
-            clip = editor.add_clip(source.id, 0.0, source.duration)
+            def _import_and_add():
+                source = editor.import_video(str(dest))
+                # Automaattisesti koko lähde klipiksi – ei-insinöörin UX
+                clip = editor.add_clip(source.id, 0.0, source.duration)
+                return source, clip, _state_payload(editor, lang=code)
+
+            source, clip, state = await run_in_threadpool(_import_and_add)
             return {
                 "ok": True,
                 "kind": "video",
                 "source": source.model_dump(),
                 "clip": clip.model_dump(),
-                "state": _state_payload(editor, lang=code),
+                "state": state,
             }
         except Exception as exc:  # noqa: BLE001 – rajapinta palauttaa viestin
             dest.unlink(missing_ok=True)
@@ -458,6 +488,10 @@ def create_app(
                     transition_type=body.transition_type,
                     duration=body.duration,
                 )
+            elif body.action == "remove_transition":
+                if body.after_clip is None:
+                    raise ValueError("remove_transition requires after_clip")
+                editor.remove_transition(_one_to_zero(body.after_clip))
             return {"ok": True, "state": _state_payload(editor, lang=code)}
         except (ValueError, IndexError) as exc:
             return _error(exc)
@@ -476,6 +510,8 @@ def create_app(
         flag = bool(req.delete_media or delete_media)
         try:
             result = editor.reset_project(delete_media=flag)
+            with app.state.chat_lock:
+                app.state.chat_history.clear()
             return {
                 "ok": True,
                 "result": result,
@@ -536,7 +572,13 @@ def create_app(
             detail="Processing command (Qwen3)",
         )
         try:
-            result = run_agent(editor, body.message, lang=code)
+            with app.state.chat_lock:
+                result = run_agent(
+                    editor,
+                    body.message,
+                    lang=code,
+                    history=app.state.chat_history,
+                )
             return {
                 "ok": True,
                 "ready": result.ready,
@@ -558,7 +600,7 @@ def create_app(
     async def serve_media(file_path: str, request: Request) -> FileResponse:
         workspace = Path(get_editor().workspace).resolve()
         target = (workspace / file_path).resolve()
-        if not str(target).startswith(str(workspace)):
+        if not target.is_relative_to(workspace):
             raise HTTPException(status_code=403, detail="Forbidden")
         if not target.is_file():
             raise HTTPException(status_code=404, detail="Not found")

@@ -45,6 +45,8 @@ const els = {
   scrubber: document.getElementById("scrubber"),
   scrubberTrack: document.getElementById("scrubber-track"),
   scrubberBlocks: document.getElementById("scrubber-blocks"),
+  scrubberAudioLane: document.getElementById("scrubber-audio-lane"),
+  scrubberAudioBlocks: document.getElementById("scrubber-audio-blocks"),
   scrubberTicks: document.getElementById("scrubber-ticks"),
   scrubberPlayhead: document.getElementById("scrubber-playhead"),
   scrubberTimecode: document.getElementById("scrubber-timecode"),
@@ -62,7 +64,7 @@ const els = {
   clipStrip: document.getElementById("clip-strip"),
   audioTimeline: document.getElementById("audio-timeline"),
   audioTimelineMeta: document.getElementById("audio-timeline-meta"),
-  audioTimelineTrack: document.getElementById("audio-timeline-track"),
+  audioClipList: document.getElementById("audio-clip-list"),
   timelineDuration: document.getElementById("timeline-duration"),
   commandForm: document.getElementById("command-form"),
   commandInput: document.getElementById("command-input"),
@@ -447,11 +449,14 @@ function clipLayoutSpans() {
 function renderScrubber() {
   if (!els.scrubber || !els.scrubberBlocks || !els.scrubberTicks) return;
   const clips = state.summary?.clips || [];
+  const audioClips = state.summary?.audio_clips || [];
   const total = totalDuration();
   els.scrubber.hidden = clips.length === 0 || total <= 0;
   els.scrubberBlocks.innerHTML = "";
+  if (els.scrubberAudioBlocks) els.scrubberAudioBlocks.innerHTML = "";
   els.scrubberTicks.innerHTML = "";
   if (!clips.length || total <= 0) {
+    if (els.scrubberAudioLane) els.scrubberAudioLane.hidden = true;
     updatePlayheadUi(0);
     updateSelectionUi(null, null);
     return;
@@ -472,6 +477,33 @@ function renderScrubber() {
     block.appendChild(label);
     els.scrubberBlocks.appendChild(block);
   });
+
+  // Erotettu ääniraita samassa aikaskaalassa suoraan videoraidan alla
+  if (els.scrubberAudioLane && els.scrubberAudioBlocks) {
+    const hasAudioLane = audioClips.length > 0;
+    els.scrubberAudioLane.hidden = !hasAudioLane;
+    if (hasAudioLane) {
+      audioClips.forEach((ac) => {
+        const start = Math.max(0, Number(ac.timeline_start_sec) || 0);
+        if (start >= total) return;
+        const dur = Math.max(0.05, Number(ac.duration_sec) || 0.05);
+        const left = (start / total) * 100;
+        const width = Math.max(0.6, Math.min(100 - left, (dur / total) * 100));
+        const block = document.createElement("div");
+        block.className = "scrubber-audio-block";
+        block.style.left = `${left}%`;
+        block.style.width = `${width}%`;
+        const baseLabel = ac.label || t("audioClipLabel", { n: ac.index });
+        const vol = typeof ac.volume === "number" ? ac.volume : 1.0;
+        const volSuffix = Math.abs(vol - 1.0) > 0.01 ? ` (${Math.round(vol * 100)}%)` : "";
+        block.title = `${baseLabel}${volSuffix} · ${formatTimecode(start)} – ${formatTimecode(start + dur)} (${formatSeconds(dur)})`;
+        const span = document.createElement("span");
+        span.textContent = `${baseLabel}${volSuffix}`;
+        block.appendChild(span);
+        els.scrubberAudioBlocks.appendChild(block);
+      });
+    }
+  }
 
   const step = total <= 10 ? 1 : total <= 30 ? 5 : total <= 120 ? 10 : 30;
   for (let mark = 0; mark <= total + 1e-9; mark += step) {
@@ -665,31 +697,88 @@ function renderAudioTracks(summary) {
 }
 
 function renderAudioTimeline(summary) {
-  if (!els.audioTimeline || !els.audioTimelineTrack) return;
+  if (!els.audioTimeline || !els.audioClipList) return;
   const clips = summary?.audio_clips || [];
-  const total = Math.max(Number(summary?.total_duration_sec) || 0, 0.001);
   if (!clips.length) {
     els.audioTimeline.hidden = true;
-    els.audioTimelineTrack.innerHTML = "";
+    els.audioClipList.innerHTML = "";
     return;
   }
   els.audioTimeline.hidden = false;
   if (els.audioTimelineMeta) {
     els.audioTimelineMeta.textContent = t("audioTimelineMeta", { count: clips.length });
   }
-  els.audioTimelineTrack.innerHTML = "";
+  els.audioClipList.innerHTML = "";
   clips.forEach((clip) => {
     const start = Math.max(0, Number(clip.timeline_start_sec) || 0);
     const dur = Math.max(0.05, Number(clip.duration_sec) || 0.05);
-    const left = (start / total) * 100;
-    const width = Math.min(100 - left, (dur / total) * 100);
-    const block = document.createElement("div");
-    block.className = "audio-clip-block";
-    block.style.left = `${left}%`;
-    block.style.width = `${Math.max(width, 1.5)}%`;
-    block.title = `${clip.label || t("audioClipLabel", { n: clip.index })} · ${formatSeconds(dur)}`;
-    block.textContent = clip.label || t("audioClipLabel", { n: clip.index });
-    els.audioTimelineTrack.appendChild(block);
+    const end = Number(clip.timeline_end_sec) || start + dur;
+    const vol = typeof clip.volume === "number" ? clip.volume : 1.0;
+
+    const li = document.createElement("li");
+    li.className = "audio-clip-row";
+
+    const info = document.createElement("div");
+    info.className = "audio-clip-info";
+
+    const badge = document.createElement("span");
+    badge.className = "audio-clip-badge";
+    badge.textContent = clip.label || t("audioClipLabel", { n: clip.index });
+
+    const meta = document.createElement("span");
+    meta.className = "audio-clip-meta";
+    const volPart = Math.abs(vol - 1.0) > 0.01 ? ` · ${Math.round(vol * 100)}%` : "";
+    meta.textContent = `${formatTimecode(start)} – ${formatTimecode(end)} (${formatSeconds(dur)})${volPart}`;
+
+    info.appendChild(badge);
+    info.appendChild(meta);
+
+    const actions = document.createElement("div");
+    actions.className = "audio-clip-actions";
+
+    const splitBtn = document.createElement("button");
+    splitBtn.type = "button";
+    splitBtn.textContent = t("split");
+    splitBtn.addEventListener("click", async () => {
+      const ph = state.playheadSec;
+      const at =
+        ph > start + 0.05 && ph < end - 0.05
+          ? ph
+          : start + dur / 2;
+      await mutate(() =>
+        api("/api/audio", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action: "split", timestamp_sec: at }),
+        })
+      );
+    });
+
+    const removeBtn = document.createElement("button");
+    removeBtn.type = "button";
+    removeBtn.className = "danger";
+    removeBtn.textContent = t("remove");
+    removeBtn.addEventListener("click", async () => {
+      await mutate(() =>
+        api("/api/audio", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            action: "cut_range",
+            start_sec: start,
+            end_sec: end,
+            ripple: false,
+          }),
+        })
+      );
+    });
+
+    actions.appendChild(splitBtn);
+    actions.appendChild(removeBtn);
+
+    li.appendChild(info);
+    li.appendChild(actions);
+    els.audioClipList.appendChild(li);
   });
 }
 
@@ -839,7 +928,16 @@ function renderClipStrip() {
       });
       select.addEventListener("change", async () => {
         if (select.value === "none") {
-          setStatus(t("transitionClearedHint"));
+          await mutate(() =>
+            api("/api/effects", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                action: "remove_transition",
+                after_clip: clip.index,
+              }),
+            })
+          );
           return;
         }
         await mutate(() =>

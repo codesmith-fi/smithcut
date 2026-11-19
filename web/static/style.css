@@ -420,7 +420,8 @@ body {
 
 .scrubber-track {
   position: relative;
-  height: 52px;
+  min-height: 54px;
+  padding: 6px 0 18px;
   border-radius: 10px;
   border: 1px solid var(--line);
   background:
@@ -437,16 +438,48 @@ body {
   box-shadow: 0 0 0 2px var(--accent-dim);
 }
 
-.scrubber-blocks {
+.scrubber-lanes {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  z-index: 1;
+}
+
+.scrubber-lane {
+  position: relative;
+  width: 100%;
+}
+
+.scrubber-lane-video {
+  height: 32px;
+}
+
+.scrubber-lane-audio {
+  height: 26px;
+  padding-top: 4px;
+  border-top: 1px solid color-mix(in srgb, var(--line) 85%, transparent);
+}
+
+.scrubber-lane-audio[hidden] {
+  display: none !important;
+}
+
+.scrubber-blocks,
+.scrubber-audio-blocks {
   position: absolute;
   inset: 0;
   display: block;
 }
 
+.scrubber-lane-audio .scrubber-audio-blocks {
+  top: 4px;
+}
+
 .scrubber-block {
   position: absolute;
-  top: 8px;
-  bottom: 8px;
+  top: 0;
+  bottom: 0;
   border-radius: 6px;
   background: color-mix(in srgb, var(--accent) 28%, var(--bg-1));
   border: 1px solid color-mix(in srgb, var(--accent) 45%, transparent);
@@ -457,10 +490,11 @@ body {
 .scrubber-block span {
   position: absolute;
   left: 0.4rem;
-  top: 0.35rem;
+  top: 50%;
+  transform: translateY(-50%);
   font-size: 0.68rem;
   font-weight: 600;
-  color: color-mix(in srgb, var(--text) 88%, transparent);
+  color: color-mix(in srgb, var(--text) 90%, transparent);
   white-space: nowrap;
   pointer-events: none;
 }
@@ -475,10 +509,38 @@ body {
   z-index: 1;
 }
 
+.scrubber-audio-block {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  border-radius: 5px;
+  background: color-mix(in srgb, var(--warn) 22%, var(--bg-1));
+  border: 1px solid color-mix(in srgb, var(--warn) 50%, transparent);
+  overflow: hidden;
+  min-width: 4px;
+}
+
+.scrubber-audio-block:nth-child(odd) {
+  background: color-mix(in srgb, var(--warn) 30%, var(--bg-1));
+}
+
+.scrubber-audio-block span {
+  position: absolute;
+  left: 0.4rem;
+  top: 50%;
+  transform: translateY(-50%);
+  font-size: 0.66rem;
+  font-weight: 650;
+  color: color-mix(in srgb, var(--text) 92%, transparent);
+  white-space: nowrap;
+  pointer-events: none;
+}
+
 .scrubber-ticks {
   position: absolute;
   inset: 0;
   pointer-events: none;
+  z-index: 0;
 }
 
 .scrubber-tick {
@@ -733,37 +795,73 @@ body {
   font-size: 0.8rem;
 }
 
-.audio-timeline-track {
-  position: relative;
-  height: 2.4rem;
-  border-radius: 8px;
-  background: linear-gradient(
-    180deg,
-    color-mix(in srgb, var(--accent) 8%, var(--bg)),
-    var(--bg)
-  );
-  border: 1px solid var(--line);
-  overflow: hidden;
+.audio-clip-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
 }
 
-.audio-clip-block {
-  position: absolute;
-  top: 0.3rem;
-  bottom: 0.3rem;
-  min-width: 1.2rem;
-  border-radius: 6px;
-  border: 1px solid color-mix(in srgb, var(--accent) 55%, var(--line));
-  background: color-mix(in srgb, var(--accent) 28%, var(--bg-2));
-  color: var(--text);
-  font-size: 0.72rem;
-  font-weight: 650;
+.audio-clip-row {
   display: flex;
   align-items: center;
-  justify-content: center;
-  padding: 0 0.35rem;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  justify-content: space-between;
+  gap: 0.6rem;
+  padding: 0.45rem 0.6rem;
+  border-radius: 8px;
+  border: 1px solid color-mix(in srgb, var(--warn) 35%, var(--line));
+  background: color-mix(in srgb, var(--warn) 8%, var(--bg-1));
+  font-size: 0.82rem;
+}
+
+.audio-clip-info {
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+  min-width: 0;
+  flex-wrap: wrap;
+}
+
+.audio-clip-badge {
+  font-weight: 700;
+  color: var(--warn);
+}
+
+.audio-clip-meta {
+  color: var(--muted);
+  font-size: 0.76rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.audio-clip-actions {
+  display: flex;
+  gap: 0.35rem;
+  flex: 0 0 auto;
+}
+
+.audio-clip-actions button {
+  appearance: none;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--bg-2);
+  color: var(--text);
+  font: inherit;
+  font-size: 0.74rem;
+  font-weight: 600;
+  padding: 0.25rem 0.55rem;
+  cursor: pointer;
+}
+
+.audio-clip-actions button:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.audio-clip-actions button.danger:hover {
+  border-color: var(--danger);
+  color: var(--danger);
 }
 
 .clip-card {

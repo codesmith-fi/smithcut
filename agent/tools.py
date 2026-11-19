@@ -178,6 +178,23 @@ OLLAMA_TOOLS: list[dict[str, Any]] = [
     {
         "type": "function",
         "function": {
+            "name": "remove_transition",
+            "description": (
+                "Remove a transition after a clip (restore hard cut). "
+                "after_clip is 1-based (1 = between clip 1 and 2)."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "after_clip": {"type": "integer", "minimum": 1},
+                },
+                "required": ["after_clip"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "set_music",
             "description": "Set background music from a file path on disk.",
             "parameters": {
@@ -249,11 +266,11 @@ OLLAMA_TOOLS: list[dict[str, Any]] = [
             "name": "apply_crossfade_to_selection",
             "description": (
                 "Apply a crossfade/fade between two clips. "
-                "clip_index is 0-based for the first clip of the pair "
-                "(0 = between clip 1 and clip 2). "
+                "clip_index is 1-based for the first clip of the pair "
+                "(1 = between clip 1 and clip 2). "
                 "Pass duration_sec with clip_index for verbal requests without "
                 "a painted selection (e.g. 5s from end of clip1 + 5s from start "
-                "of clip2 → duration_sec=10, clip_index=0). "
+                "of clip2 → duration_sec=10, clip_index=1). "
                 "If only a painted selection exists, duration defaults to its length."
             ),
             "parameters": {
@@ -272,10 +289,10 @@ OLLAMA_TOOLS: list[dict[str, Any]] = [
                     },
                     "clip_index": {
                         "type": "integer",
-                        "minimum": 0,
+                        "minimum": 1,
                         "description": (
-                            "0-based index of the first clip (seam after this clip). "
-                            "0 = clips 1→2."
+                            "1-based index of the first clip (seam after this clip). "
+                            "1 = clips 1→2."
                         ),
                     },
                 },
@@ -536,6 +553,16 @@ def _dump(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False)
 
 
+def _opt_float(args: dict[str, Any], key: str, default: float) -> float:
+    val = args.get(key)
+    return default if val is None else float(val)
+
+
+def _opt_int(args: dict[str, Any], key: str, default: int) -> int:
+    val = args.get(key)
+    return default if val is None else int(val)
+
+
 def execute_tool(
     editor: EditorController,
     name: str,
@@ -597,7 +624,7 @@ def execute_tool(
                 region=str(args.get("region") or "center"),
                 target_x=args.get("target_x"),
                 target_y=args.get("target_y"),
-                zoom_factor=float(args.get("zoom_factor") or 1.8),
+                zoom_factor=_opt_float(args, "zoom_factor", 1.8),
             )
             return _dump(effect), changed
 
@@ -616,16 +643,22 @@ def execute_tool(
             transition = editor.set_transition(
                 one_to_zero(args["after_clip"], label="after_clip"),
                 transition_type=str(args.get("transition_type") or "fadeblack"),
-                duration=float(args.get("duration") or 0.4),
+                duration=_opt_float(args, "duration", 0.4),
             )
             return _dump(transition), changed
+
+        if name == "remove_transition":
+            removed = editor.remove_transition(
+                one_to_zero(args["after_clip"], label="after_clip")
+            )
+            return json.dumps({"ok": True, "removed": removed}), removed
 
         if name == "set_music":
             music = editor.set_music(
                 str(args["file_path"]),
-                bgm_volume=float(args.get("bgm_volume") or 0.85),
-                sfx_volume=float(args.get("sfx_volume") or 0.35),
-                fade_out_sec=float(args.get("fade_out_sec") or 2.0),
+                bgm_volume=_opt_float(args, "bgm_volume", 0.85),
+                sfx_volume=_opt_float(args, "sfx_volume", 0.35),
+                fade_out_sec=_opt_float(args, "fade_out_sec", 2.0),
             )
             return _dump(music), changed
 
@@ -677,6 +710,11 @@ def execute_tool(
 
         if name == "apply_crossfade_to_selection":
             clip_index = args.get("clip_index")
+            zero_clip = (
+                one_to_zero(clip_index, label="clip_index")
+                if clip_index is not None
+                else None
+            )
             transition = editor.apply_crossfade_to_selection(
                 transition_type=str(args.get("transition_type") or "fade"),
                 duration_sec=(
@@ -684,15 +722,16 @@ def execute_tool(
                     if args.get("duration_sec") is not None
                     else None
                 ),
-                clip_index=int(clip_index) if clip_index is not None else None,
+                clip_index=zero_clip,
             )
             return _dump(
                 {
                     **transition.model_dump(),
                     "ok": True,
+                    "after_clip": transition.after_clip_index + 1,
                     "duration_sec": transition.duration,
                     "message": (
-                        f"Crossfade set after clip {transition.after_clip_index} "
+                        f"Crossfade set after clip {transition.after_clip_index + 1} "
                         f"({transition.duration:.1f} s)"
                     ),
                 }
@@ -700,8 +739,8 @@ def execute_tool(
 
         if name == "add_blur_to_selection":
             effects = editor.add_blur_to_selection(
-                max_sigma=float(args.get("max_sigma") or 18.0),
-                fade_sec=float(args.get("fade_sec") or 0.6),
+                max_sigma=_opt_float(args, "max_sigma", 18.0),
+                fade_sec=_opt_float(args, "fade_sec", 0.6),
             )
             return _dump([e.model_dump() for e in effects]), changed
 
@@ -714,8 +753,8 @@ def execute_tool(
 
         if name == "attach_audio_track":
             track = editor.attach_audio_track(
-                track_index=int(args.get("track_index") or 1),
-                start_sec=float(args.get("start_sec") or 0.0),
+                track_index=_opt_int(args, "track_index", 1),
+                start_sec=_opt_float(args, "start_sec", 0.0),
             )
             return _dump(track), changed
 
@@ -735,7 +774,7 @@ def execute_tool(
 
         if name == "split_audio_clip":
             left, right = editor.split_audio_clip(float(args["timestamp_sec"]))
-            return _dump({"left": left, "right": right}), changed
+            return _dump({"left": left.model_dump(), "right": right.model_dump()}), changed
 
         if name == "cut_audio_range":
             start = args.get("start_sec")

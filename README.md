@@ -97,7 +97,7 @@ Or manually:
 ```bash
 .venv/bin/uvicorn web.api:app --reload \
   --reload-dir agent --reload-dir compiler --reload-dir controller \
-  --reload-dir mcp_server --reload-dir models --reload-dir web \
+  --reload-dir mcp_server --reload-dir model --reload-dir web \
   --reload-exclude 'workspace/*' --port 8000
 ```
 
@@ -138,7 +138,7 @@ Run the unit and FFmpeg integration test suite with `pytest`:
 
 ```text
 cutsmith/
-├── models/        # Data models (Timeline, VideoClip, Transition, BlurEffect, AudioTrack)
+├── model/         # Data models (Timeline, Clip, Transition, BlurEffect, AudioTrack)
 ├── compiler/      # FFmpeg filter_complex compiler and preview renderer
 ├── controller/    # EditorController, state management, and workspace/project_state.json
 ├── mcp_server/    # AI agent tool interfaces

@@ -22,6 +22,7 @@ DEFAULT_OLLAMA_URL = "http://localhost:11434"
 DEFAULT_MODEL = "qwen3:8b"
 KEEP_ALIVE = "5m"
 MAX_TOOL_ROUNDS = 8
+MAX_HISTORY_MESSAGES = 10  # 5 viimeisintä käyttäjä/assistentti-vuoroa
 
 _ERROR_I18N = {
     "fi": {
@@ -74,6 +75,10 @@ def _model_name() -> str:
     return os.environ.get("CUTSMITH_MODEL", DEFAULT_MODEL)
 
 
+def _keep_alive() -> str:
+    return os.environ.get("CUTSMITH_KEEP_ALIVE", KEEP_ALIVE)
+
+
 def _ollama_base() -> str:
     return (
         os.environ.get("OLLAMA_HOST")
@@ -123,11 +128,11 @@ def _system_prompt(lang: str, state_summary: dict[str, Any]) -> str:
         "the end of clip 1 and N seconds from the start of clip 2 "
         "(e.g. 'Valitse clip1 lopusta ja clip 2 alusta 5 sekuntia molemmista "
         "ja tee crossfade'), set duration_sec = 2*N (5+5=10.0) and call "
-        "apply_crossfade_to_selection with clip_index=0, duration_sec=10.0 "
-        "(clip_index is 0-based: 0 = seam between clip 1 and 2). "
+        "apply_crossfade_to_selection with clip_index=1, duration_sec=10.0 "
+        "(clip_index is 1-based: 1 = seam between clip 1 and 2). "
         "If they say 'tee N sekunnin crossfade clippien 1 ja 2 välille' / "
         "'N second crossfade between clips 1 and 2', call with "
-        "clip_index=0, duration_sec=N.\n"
+        "clip_index=1, duration_sec=N.\n"
         "Audio: 'Poista videosta ääniraita' → remove_video_audio(). "
         "'Lisää ääniraita 1 videoon' / 'Lisää klippinauhasta ääniraita 1 videoon' "
         "→ attach_audio_track(track_index=1). Audio track indices are 1-based.\n"
@@ -236,7 +241,7 @@ def _chat_once(
         "messages": messages,
         "tools": OLLAMA_TOOLS,
         "stream": False,
-        "keep_alive": KEEP_ALIVE,
+        "keep_alive": _keep_alive(),
         # Qwen3: kytke sisäinen ajatteluketju pois (nopeampi tool calling)
         "think": False,
     }
@@ -265,14 +270,24 @@ def run_agent(
     lang: str = "fi",
     client: httpx.Client | None = None,
     model: str | None = None,
+    history: list[dict[str, str]] | None = None,
 ) -> AgentResult:
     """Suorita yksi käyttäjäviesti tool calling -silmukalla."""
     lang = normalize_lang(lang)
     model = model or _model_name()
     strings = _ERROR_I18N[lang]
+    user_text = message.strip()
+    prior: list[dict[str, Any]] = []
+    if history:
+        for item in history[-MAX_HISTORY_MESSAGES:]:
+            role = item.get("role")
+            content_item = item.get("content")
+            if role in ("user", "assistant") and isinstance(content_item, str):
+                prior.append({"role": role, "content": content_item})
     messages: list[dict[str, Any]] = [
         {"role": "system", "content": ""},
-        {"role": "user", "content": message.strip()},
+        *prior,
+        {"role": "user", "content": user_text},
     ]
 
     owns_client = client is None
@@ -321,6 +336,14 @@ def run_agent(
                     ready=True,
                     tool_calls=used_tools,
                 )
+            if history is not None:
+                if "reset_project" in used_tools:
+                    history.clear()
+                else:
+                    history.append({"role": "user", "content": user_text})
+                    history.append({"role": "assistant", "content": content})
+                    if len(history) > MAX_HISTORY_MESSAGES:
+                        del history[:-MAX_HISTORY_MESSAGES]
             return AgentResult(
                 reply=content,
                 changed=changed,

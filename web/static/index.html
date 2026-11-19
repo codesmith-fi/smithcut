@@ -7,7 +7,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700&family=Syne:wght@600;700;800&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="/style.css" />
+  <link rel="stylesheet" href="/style.css?v=2" />
 </head>
 <body>
   <div class="app">
@@ -78,7 +78,14 @@
             data-i18n-aria="scrubberAria"
             aria-label="Aikajanan markkeri"
           >
-            <div class="scrubber-blocks" id="scrubber-blocks"></div>
+            <div class="scrubber-lanes">
+              <div class="scrubber-lane scrubber-lane-video">
+                <div class="scrubber-blocks" id="scrubber-blocks"></div>
+              </div>
+              <div class="scrubber-lane scrubber-lane-audio" id="scrubber-audio-lane" hidden>
+                <div class="scrubber-audio-blocks" id="scrubber-audio-blocks"></div>
+              </div>
+            </div>
             <div class="scrubber-ticks" id="scrubber-ticks"></div>
             <div class="scrubber-selection-range" id="scrubber-selection-range" hidden>
               <button type="button" class="scrubber-handle scrubber-handle-start" id="scrubber-handle-start" aria-label="Valinnan alku"></button>
@@ -137,7 +144,7 @@
             <h3 data-i18n="audioTimelineTitle">Ääniraita</h3>
             <p class="audio-timeline-meta" id="audio-timeline-meta"></p>
           </div>
-          <div class="audio-timeline-track" id="audio-timeline-track" aria-live="polite"></div>
+          <ul class="audio-clip-list" id="audio-clip-list" aria-live="polite"></ul>
         </div>
       </section>
     </main>
@@ -196,6 +203,6 @@
     </form>
   </dialog>
 
-  <script src="/app.js" type="module"></script>
+  <script src="/app.js?v=2" type="module"></script>
 </body>
 </html>
