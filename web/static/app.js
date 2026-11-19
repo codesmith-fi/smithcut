@@ -16,14 +16,17 @@ import {
   transitionLabels,
 } from "./i18n.js";
 import {
+  clearSelectionUiAndServer,
   hideStillAndSyncVideo,
   postPlayhead,
   renderScrubber,
+  setSelectedTimelineItem,
   setStillMode,
   updatePlayheadUi,
   wireScrubberEvents,
 } from "./scrubber.js";
 import {
+  SELECTION_MIN_SEC,
   clampPlayhead,
   els,
   formatSeconds,
@@ -35,6 +38,28 @@ import {
   transitionForClip,
 } from "./state.js";
 
+function reconcileTimelineSelection(summary) {
+  const sel = state.selectedTimelineItem;
+  if (!sel) return;
+  if (sel.type === "video") {
+    const match = (summary.clips || []).find(
+      (c) => (sel.id && c.id === sel.id) || c.index === sel.index
+    );
+    state.selectedTimelineItem = match
+      ? { type: "video", index: match.index, id: match.id || null }
+      : null;
+  } else if (sel.type === "audio") {
+    const match = (summary.audio_clips || []).find(
+      (c) => (sel.id && c.id === sel.id) || c.index === sel.index
+    );
+    state.selectedTimelineItem = match
+      ? { type: "audio", index: match.index, id: match.id || null }
+      : null;
+  } else {
+    state.selectedTimelineItem = null;
+  }
+}
+
 function applyState(summary) {
   state.summary = summary;
   if (!summary.clips?.length) {
@@ -42,6 +67,7 @@ function applyState(summary) {
   } else if (state.selectedClip > summary.clips.length) {
     state.selectedClip = summary.clips.length;
   }
+  reconcileTimelineSelection(summary);
 
   els.undo.disabled = !summary.can_undo;
   els.redo.disabled = !summary.can_redo;
@@ -265,10 +291,8 @@ function renderAudioTimeline(summary) {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
-            action: "cut_range",
-            start_sec: start,
-            end_sec: end,
-            ripple: false,
+            action: "remove",
+            clip_index: clip.index,
           }),
         })
       );
@@ -386,6 +410,7 @@ function buildClipCard(clip) {
   card.addEventListener("click", (ev) => {
     if (ev.target.closest("button")) return;
     state.selectedClip = clip.index;
+    setSelectedTimelineItem({ type: "video", index: clip.index, id: clip.id || null });
     renderClipStrip();
   });
 
@@ -746,6 +771,7 @@ function wireEvents() {
           body: JSON.stringify({ delete_media: false }),
         });
         state.selectedClip = 1;
+        state.selectedTimelineItem = null;
         state.playheadSec = 0;
         state.selectionStart = null;
         state.selectionEnd = null;
@@ -814,7 +840,101 @@ function wireEvents() {
     }
   });
 
-  wireScrubberEvents();
+function hasActiveRangeSelection() {
+  return (
+    state.selectionStart != null &&
+    state.selectionEnd != null &&
+    state.selectionEnd - state.selectionStart >= SELECTION_MIN_SEC
+  );
+}
+
+function isEditableFocus(target) {
+  if (!target) return false;
+  const tag = (target.tagName || "").toLowerCase();
+  if (tag === "input" || tag === "textarea" || tag === "select") return true;
+  if (target.isContentEditable) return true;
+  if (target.closest?.("[contenteditable='true'], dialog[open]")) return true;
+  return false;
+}
+
+async function deleteSelectedRange() {
+  if (!hasActiveRangeSelection() || state.busy) return;
+  const startSec = state.selectionStart;
+  const endSec = state.selectionEnd;
+  setSelectedTimelineItem(null);
+  await mutate(() =>
+    api("/api/timeline/cut-range", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        start_sec: startSec,
+        end_sec: endSec,
+        include_audio: true,
+      }),
+    })
+  );
+}
+
+async function deleteSelectedTimelineItem() {
+  const item = state.selectedTimelineItem;
+  if (!item || state.busy) return;
+  setSelectedTimelineItem(null);
+  if (item.type === "audio") {
+    await mutate(() =>
+      api("/api/audio", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "remove",
+          clip_index: item.index,
+        }),
+      })
+    );
+    return;
+  }
+  if (item.type === "video") {
+    await mutate(() =>
+      api("/api/clips", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "remove",
+          clip_index: item.index,
+        }),
+      })
+    );
+  }
+}
+
+  wireScrubberEvents({
+    onSelectChange: () => renderClipStrip(),
+    onDeleteSelection: () => {
+      deleteSelectedRange().catch(() => {});
+    },
+  });
+
+  document.addEventListener("keydown", (e) => {
+    if (isEditableFocus(e.target)) return;
+    if (e.key === "Escape") {
+      if (state.selectedTimelineItem || hasActiveRangeSelection()) {
+        e.preventDefault();
+        setSelectedTimelineItem(null);
+        clearSelectionUiAndServer();
+        renderClipStrip();
+      }
+      return;
+    }
+    if (e.key === "Delete" || e.key === "Backspace") {
+      if (state.busy) return;
+      if (hasActiveRangeSelection()) {
+        e.preventDefault();
+        deleteSelectedRange().catch(() => {});
+      } else if (state.selectedTimelineItem) {
+        e.preventDefault();
+        deleteSelectedTimelineItem().catch(() => {});
+      }
+    }
+  });
 
   document.querySelectorAll("[data-quick]").forEach((btn) => {
     btn.addEventListener("click", () => {

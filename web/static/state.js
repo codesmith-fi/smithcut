@@ -8,6 +8,8 @@ export const SELECTION_MIN_SEC = 0.05;
 export const state = {
   summary: null,
   selectedClip: 1,
+  // Valittu klippi Aikajanalla: { type: "video" | "audio", index: number, id: string | null } | null
+  selectedTimelineItem: null,
   busy: false,
   pollTimer: null,
   playheadSec: 0,
@@ -49,6 +51,7 @@ export const els = {
   scrubberSelection: document.getElementById("scrubber-selection"),
   scrubberSelectionRange: document.getElementById("scrubber-selection-range"),
   scrubberClear: document.getElementById("scrubber-clear"),
+  scrubberDeleteSelection: document.getElementById("scrubber-delete-selection"),
   scrubberHandleStart: document.getElementById("scrubber-handle-start"),
   scrubberHandleEnd: document.getElementById("scrubber-handle-end"),
   dropzone: document.getElementById("dropzone"),

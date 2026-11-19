@@ -340,3 +340,33 @@ def test_move_clip_preserves_adjacent_pair_transitions(tmp_path: Path):
         (1, "fade"),
     ]
     editor.timeline.validate_consistency()
+
+
+def test_cut_out_range_drops_edge_ghost_slivers_on_video_and_audio(tmp_path: Path):
+    editor = _editor_with_video(tmp_path)  # 20.0 s video
+    audio = tmp_path / "detached.m4a"
+    audio.write_bytes(b"fake-audio")
+    editor.timeline.audio_clips = [
+        AudioClip(
+            id="ac1",
+            source_path=str(audio),
+            in_point=0.0,
+            out_point=20.0,
+            timeline_start=0.0,
+        )
+    ]
+
+    # Leikkaa 10.0 s → 19.96 s (0.04 s vajaa lopusta): ei saa jäädä haamuklippiä loppuun
+    editor.cut_out_range(10.0, 9.96, include_audio=True)
+    assert len(editor.timeline.clips) == 1
+    assert editor.timeline.clips[0].duration == pytest.approx(10.0)
+    assert len(editor.timeline.audio_clips) == 1
+    assert editor.timeline.audio_clips[0].duration == pytest.approx(10.0)
+
+    # Leikkaa 0.04 s → 5.0 s (0.04 s vajaa alusta): ei saa jäädä haamuklippiä alkuun
+    editor.cut_out_range(0.04, 4.96, include_audio=True)
+    assert len(editor.timeline.clips) == 1
+    assert editor.timeline.clips[0].duration == pytest.approx(5.0)
+    assert len(editor.timeline.audio_clips) == 1
+    assert editor.timeline.audio_clips[0].duration == pytest.approx(5.0)
+    editor.timeline.validate_consistency()

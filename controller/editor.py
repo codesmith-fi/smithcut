@@ -100,6 +100,8 @@ class EditorController:
 
     # Valinnan minimikesto (sekunteina); lyhyemmät nollataan
     SELECTION_MIN_SEC = 0.05
+    # Leikkauksen jälkeisen aliklipin minimikesto (pudottaa 0–0.1 s haamuklipit)
+    MIN_SUBCLIP_SEC = 0.1
 
     # ------------------------------------------------------------------
     # Sisäiset apurit
@@ -876,7 +878,7 @@ class EditorController:
             left_len = start - a
             right_skip = end - a
             out: list[AudioClip] = []
-            if left_len > 1e-6:
+            if left_len > self.MIN_SUBCLIP_SEC + 1e-9:
                 out.append(
                     ac.model_copy(
                         update={
@@ -886,7 +888,7 @@ class EditorController:
                     )
                 )
             rem = ac.duration - right_skip
-            if rem > 1e-6:
+            if rem > self.MIN_SUBCLIP_SEC + 1e-9:
                 out.append(
                     ac.model_copy(
                         update={
@@ -899,7 +901,7 @@ class EditorController:
             return out
         if a < start < b:
             keep = start - a
-            if keep <= 1e-6:
+            if keep <= self.MIN_SUBCLIP_SEC + 1e-9:
                 return []
             return [
                 ac.model_copy(update={"out_point": ac.in_point + keep})
@@ -907,7 +909,7 @@ class EditorController:
         # Alkaa leikkauksen sisällä, jatkuu past end
         skip = max(0.0, end - a)
         rem = ac.duration - skip
-        if rem <= 1e-6:
+        if rem <= self.MIN_SUBCLIP_SEC + 1e-9:
             return []
         return [
             ac.model_copy(
@@ -934,6 +936,18 @@ class EditorController:
             updated = ac.model_copy(update={"timeline_start": float(new_start_sec)})
             self.timeline.audio_clips[zero] = updated
             return updated
+
+    def remove_audio_clip(self, clip_index: int) -> AudioClip:
+        """Poista 1-pohjainen ääniklippi erilliseltä ääniaikajanalta."""
+        with self._persist_batch():
+            if clip_index < 1:
+                raise ValueError(
+                    f"clip_index must be 1-based (first audio clip is 1), got {clip_index}"
+                )
+            zero = clip_index - 1
+            self._audio_clip(zero)  # validate
+            self._checkpoint()
+            return self.timeline.audio_clips.pop(zero)
 
     def set_audio_clip_volume(
         self,
@@ -1135,8 +1149,19 @@ class EditorController:
                 )
         return kept
 
-    def cut_out_range(self, start_sec: float, duration_sec: float) -> None:
-        """Poista aikaväli [start_sec, start_sec+duration] aikajanalta."""
+    def cut_out_range(
+        self,
+        start_sec: float,
+        duration_sec: float,
+        *,
+        include_audio: bool = False,
+    ) -> None:
+        """Poista aikaväli [start_sec, start_sec+duration] aikajanalta.
+
+        Kun ``include_audio=True`` ja erillisiä ääniklippejä (``audio_clips``)
+        on olemassa, sama aikaväli leikataan ripple-tilassa myös ääniraidalta
+        yhdellä Undo-askeleella.
+        """
         with self._persist_batch():
             if duration_sec <= 0:
                 raise ValueError("duration_sec must be > 0")
@@ -1197,12 +1222,12 @@ class EditorController:
                             ),
                         }
                     )
-                    if left.out_sec > left.in_sec + 1e-9:
+                    if left.duration > self.MIN_SUBCLIP_SEC + 1e-9:
                         idx = len(new_clips)
                         new_clips.append(left)
                         first_new_idx[i] = idx
                         start_intact[i] = True
-                    if right.out_sec > right.in_sec + 1e-9:
+                    if right.duration > self.MIN_SUBCLIP_SEC + 1e-9:
                         idx = len(new_clips)
                         new_clips.append(right)
                         if i not in first_new_idx:
@@ -1223,7 +1248,7 @@ class EditorController:
                             "effects": self._effects_for_subclip(clip, 0.0, start - cs),
                         }
                     )
-                    if updated.out_sec > updated.in_sec + 1e-9:
+                    if updated.duration > self.MIN_SUBCLIP_SEC + 1e-9:
                         idx = len(new_clips)
                         new_clips.append(updated)
                         first_new_idx[i] = idx
@@ -1242,7 +1267,7 @@ class EditorController:
                             ),
                         }
                     )
-                    if updated.out_sec > updated.in_sec + 1e-9:
+                    if updated.duration > self.MIN_SUBCLIP_SEC + 1e-9:
                         idx = len(new_clips)
                         new_clips.append(updated)
                         first_new_idx[i] = idx
@@ -1275,6 +1300,14 @@ class EditorController:
 
             self.timeline.clips = new_clips
             self.timeline.transitions = kept_transitions
+            if include_audio and self.timeline.audio_clips:
+                gap = end - start
+                new_audio: list[AudioClip] = []
+                for ac in self.timeline.audio_clips:
+                    new_audio.extend(
+                        self._cut_one_audio_clip(ac, start, end, True, gap)
+                    )
+                self.timeline.audio_clips = new_audio
             self.set_playhead(start)
 
     def cut_at_playhead(self, duration_sec: float) -> None:
@@ -1358,7 +1391,7 @@ class EditorController:
             >= self.SELECTION_MIN_SEC
         )
 
-    def cut_selected_range(self) -> None:
+    def cut_selected_range(self, *, include_audio: bool = False) -> None:
         """Leikkaa aktiivinen valintaväli pois aikajanalta."""
         with self._persist_batch():
             if not self.has_selection():
@@ -1366,7 +1399,7 @@ class EditorController:
             start = float(self.selection_start_sec)  # type: ignore[arg-type]
             end = float(self.selection_end_sec)  # type: ignore[arg-type]
             duration = end - start
-            self.cut_out_range(start, duration)
+            self.cut_out_range(start, duration, include_audio=include_audio)
             self.clear_selection()
 
     def selection_boundary_index(self) -> int | None:

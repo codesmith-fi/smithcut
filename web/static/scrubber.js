@@ -148,6 +148,36 @@ export function updateSelectionUi(start, end) {
   if (els.scrubberClear) {
     els.scrubberClear.hidden = !has;
   }
+  if (els.scrubberDeleteSelection) {
+    els.scrubberDeleteSelection.hidden = !has;
+  }
+}
+
+export function isTimelineItemSelected(type, index, id = null) {
+  const sel = state.selectedTimelineItem;
+  if (!sel || sel.type !== type) return false;
+  if (id && sel.id) return sel.id === id;
+  return sel.index === index;
+}
+
+export function updateTimelineItemSelectionUi() {
+  if (!els.scrubberTrack) return;
+  els.scrubberTrack
+    .querySelectorAll(".scrubber-block, .scrubber-audio-block")
+    .forEach((el) => {
+      const type = el.dataset.clipType;
+      const index = Number(el.dataset.clipIndex);
+      const id = el.dataset.clipId || null;
+      el.classList.toggle("is-selected", isTimelineItemSelected(type, index, id));
+    });
+}
+
+export function setSelectedTimelineItem(item) {
+  state.selectedTimelineItem = item || null;
+  if (item && item.type === "video" && item.index >= 1) {
+    state.selectedClip = item.index;
+  }
+  updateTimelineItemSelectionUi();
 }
 
 export function postSelection(start, end, { immediate = false } = {}) {
@@ -230,12 +260,21 @@ export function clearSelectionUiAndServer() {
   postSelection(null, null, { immediate: true });
 }
 
-function secFromPointerEvent(e) {
+const EDGE_SNAP_PX = 8;
+const EDGE_SNAP_RATIO = 0.01;
+
+function secFromPointerEvent(e, { snapEdges = false } = {}) {
   if (!els.scrubberTrack) return 0;
   const rect = els.scrubberTrack.getBoundingClientRect();
-  const x = Math.min(Math.max(e.clientX - rect.left, 0), rect.width || 1);
-  const ratio = rect.width > 0 ? x / rect.width : 0;
-  return clampPlayhead(ratio * totalDuration());
+  const width = rect.width || 1;
+  const x = Math.min(Math.max(e.clientX - rect.left, 0), width);
+  const ratio = width > 0 ? x / width : 0;
+  const total = totalDuration();
+  if (snapEdges && total > 0) {
+    if (x <= EDGE_SNAP_PX || ratio <= EDGE_SNAP_RATIO) return 0;
+    if (width - x <= EDGE_SNAP_PX || ratio >= 1 - EDGE_SNAP_RATIO) return total;
+  }
+  return clampPlayhead(ratio * total);
 }
 
 export function renderScrubber() {
@@ -262,6 +301,9 @@ export function renderScrubber() {
     const overlapsPrev = i > 0 && start < spans[i - 1].end - 1e-6;
     block.className =
       "scrubber-block" + (overlapsPrev ? " is-overlap" : "");
+    block.dataset.clipType = "video";
+    block.dataset.clipIndex = String(clip.index);
+    block.dataset.clipId = clip.id || "";
     block.style.left = `${left}%`;
     block.style.width = `${width}%`;
     const label = document.createElement("span");
@@ -283,6 +325,9 @@ export function renderScrubber() {
         const width = Math.max(0.6, Math.min(100 - left, (dur / total) * 100));
         const block = document.createElement("div");
         block.className = "scrubber-audio-block";
+        block.dataset.clipType = "audio";
+        block.dataset.clipIndex = String(ac.index);
+        block.dataset.clipId = ac.id || "";
         block.style.left = `${left}%`;
         block.style.width = `${width}%`;
         const baseLabel = ac.label || t("audioClipLabel", { n: ac.index });
@@ -306,6 +351,7 @@ export function renderScrubber() {
     els.scrubberTicks.appendChild(tick);
   }
 
+  updateTimelineItemSelectionUi();
   updatePlayheadUi(state.summary?.playhead_sec ?? state.playheadSec);
   updateSelectionUi(
     state.summary?.selection_start_sec ?? state.selectionStart,
@@ -313,7 +359,10 @@ export function renderScrubber() {
   );
 }
 
-export function wireScrubberEvents() {
+export function wireScrubberEvents({
+  onSelectChange = null,
+  onDeleteSelection = null,
+} = {}) {
   if (els.scrubberClear) {
     els.scrubberClear.addEventListener("click", (e) => {
       e.preventDefault();
@@ -322,7 +371,18 @@ export function wireScrubberEvents() {
     });
   }
 
+  if (els.scrubberDeleteSelection) {
+    els.scrubberDeleteSelection.addEventListener("click", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      onDeleteSelection?.();
+    });
+  }
+
   if (!els.scrubberTrack) return;
+
+  let pointerDownX = null;
+  let pointerDownBlock = null;
 
   const beginSelect = (e, mode) => {
     if (!totalDuration()) return;
@@ -331,7 +391,9 @@ export function wireScrubberEvents() {
     state.selecting = true;
     state.scrubbing = false;
     state.selectMode = mode;
-    const tip = secFromPointerEvent(e);
+    pointerDownX = null;
+    pointerDownBlock = null;
+    const tip = secFromPointerEvent(e, { snapEdges: true });
     if (mode === "paint") {
       state.selectAnchor = tip;
       updateSelectionUi(tip, tip);
@@ -355,6 +417,10 @@ export function wireScrubberEvents() {
       return;
     }
     e.preventDefault();
+    els.scrubberTrack.focus?.();
+    pointerDownX = e.clientX;
+    pointerDownBlock =
+      e.target?.closest?.(".scrubber-block, .scrubber-audio-block") || null;
     state.scrubbing = true;
     state.selecting = false;
     state.selectMode = null;
@@ -363,7 +429,7 @@ export function wireScrubberEvents() {
   };
   const onPointerMove = (e) => {
     if (state.selecting) {
-      paintSelectionTo(secFromPointerEvent(e));
+      paintSelectionTo(secFromPointerEvent(e, { snapEdges: true }));
       return;
     }
     if (!state.scrubbing) return;
@@ -371,7 +437,7 @@ export function wireScrubberEvents() {
   };
   const onPointerUp = (e) => {
     if (state.selecting) {
-      paintSelectionTo(secFromPointerEvent(e), { immediate: true });
+      paintSelectionTo(secFromPointerEvent(e, { snapEdges: true }), { immediate: true });
       state.selecting = false;
       state.selectMode = null;
       state.selectAnchor = null;
@@ -379,9 +445,32 @@ export function wireScrubberEvents() {
       return;
     }
     if (!state.scrubbing) return;
+    const isClick =
+      pointerDownX != null && Math.abs(e.clientX - pointerDownX) <= 5;
+    const hitBlock = pointerDownBlock;
+    pointerDownX = null;
+    pointerDownBlock = null;
+
     scrubTo(secFromPointerEvent(e), { immediate: true });
     state.scrubbing = false;
     hideStillAndSyncVideo();
+
+    // Pieni klikkaus valitsee klipin (tai tyhjentää valinnan tyhjältä kohdalta)
+    // ilman että raahaus-scrubbaus muuttaa valintaa.
+    if (isClick) {
+      if (hitBlock) {
+        const type = hitBlock.dataset.clipType;
+        const index = Number(hitBlock.dataset.clipIndex);
+        const id = hitBlock.dataset.clipId || null;
+        if ((type === "video" || type === "audio") && index >= 1) {
+          setSelectedTimelineItem({ type, index, id });
+          onSelectChange?.(state.selectedTimelineItem);
+        }
+      } else if (state.selectedTimelineItem) {
+        setSelectedTimelineItem(null);
+        onSelectChange?.(null);
+      }
+    }
   };
 
   els.scrubberTrack.addEventListener("pointerdown", onPointerDown);
@@ -393,7 +482,9 @@ export function wireScrubberEvents() {
     if (!total) return;
     if (e.key === "Escape") {
       e.preventDefault();
+      setSelectedTimelineItem(null);
       clearSelectionUiAndServer();
+      onSelectChange?.(null);
       return;
     }
     const step = e.shiftKey ? 1 : 0.1;

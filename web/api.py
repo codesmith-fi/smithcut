@@ -82,6 +82,12 @@ class SelectionRequest(BaseModel):
     end_sec: float | None = None
 
 
+class CutRangeRequest(BaseModel):
+    start_sec: float | None = None
+    end_sec: float | None = None
+    include_audio: bool = True
+
+
 class AudioRequest(BaseModel):
     action: Literal[
         "detach",
@@ -89,6 +95,7 @@ class AudioRequest(BaseModel):
         "cut_range",
         "move",
         "volume",
+        "remove",
     ]
     timestamp_sec: Optional[float] = None
     start_sec: Optional[float] = None
@@ -248,6 +255,34 @@ def create_app(
                 "selection_end_sec": end,
                 "state": _state_payload(editor, lang=code),
             }
+        except (ValueError, IndexError) as exc:
+            return _error(exc)
+        except Exception as exc:  # noqa: BLE001
+            return _error(exc, status=500)
+
+    @app.post("/api/timeline/cut-range", response_model=None)
+    def api_cut_timeline_range(
+        body: CutRangeRequest | None = None,
+        lang: str = Query(default="fi"),
+    ):
+        """Poista valittu tai annettu aikaväli (video + valinnaisesti erotettu ääni)."""
+        editor = get_editor()
+        code = _lang_from_request(lang)
+        req = body or CutRangeRequest()
+        try:
+            if req.start_sec is None and req.end_sec is None:
+                editor.cut_selected_range(include_audio=req.include_audio)
+            elif req.start_sec is None or req.end_sec is None:
+                raise ValueError("provide both start_sec and end_sec, or omit both")
+            else:
+                duration = float(req.end_sec) - float(req.start_sec)
+                editor.cut_out_range(
+                    float(req.start_sec),
+                    duration,
+                    include_audio=req.include_audio,
+                )
+                editor.clear_selection()
+            return {"ok": True, "state": _state_payload(editor, lang=code)}
         except (ValueError, IndexError) as exc:
             return _error(exc)
         except Exception as exc:  # noqa: BLE001
@@ -446,6 +481,10 @@ def create_app(
                 editor.set_audio_clip_volume(
                     clip_index=body.clip_index, volume=body.volume
                 )
+            elif body.action == "remove":
+                if body.clip_index is None:
+                    raise ValueError("remove requires clip_index")
+                editor.remove_audio_clip(body.clip_index)
             return {"ok": True, "state": _state_payload(editor, lang=code)}
         except (ValueError, KeyError, IndexError) as exc:
             return _error(exc)

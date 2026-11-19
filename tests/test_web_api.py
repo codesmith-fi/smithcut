@@ -301,3 +301,79 @@ def test_clips_validation_error(client: TestClient):
 def test_media_path_traversal_blocked(client: TestClient):
     res = client.get("/media/../SPEC.md")
     assert res.status_code in (403, 404)
+
+
+def test_cut_range_endpoint_cuts_video_and_detached_audio_with_undo(
+    client: TestClient, workspace: Path
+):
+    from model.timeline import AudioClip
+
+    _upload_video(client)
+    audio_file = workspace / "detached.m4a"
+    audio_file.write_bytes(b"fake-audio")
+    editor = client.editor  # type: ignore[attr-defined]
+    editor.timeline.audio_clips = [
+        AudioClip(
+            id="ac_1",
+            source_path=str(audio_file),
+            in_point=0.0,
+            out_point=10.0,
+            timeline_start=0.0,
+        )
+    ]
+    editor.timeline.mute_video_audio = True
+
+    # Maalaa 2..5 s ja poista valittu alue
+    sel = client.post(
+        "/api/timeline/selection",
+        json={"start_sec": 2.0, "end_sec": 5.0},
+    )
+    assert sel.status_code == 200
+    cut = client.post("/api/timeline/cut-range", json={"include_audio": True})
+    assert cut.status_code == 200
+    body = cut.json()
+    assert body["ok"] is True
+    assert body["state"]["total_duration_sec"] == pytest.approx(7.0)
+    assert body["state"]["selection_start_sec"] is None
+    assert body["state"]["selection_end_sec"] is None
+    # Ääniraita leikkautui ripple-tilassa kahdeksi klipiksi (0..2 s ja 2..7 s)
+    assert body["state"]["audio_clip_count"] == 2
+    assert body["state"]["audio_clips"][0]["duration_sec"] == pytest.approx(2.0)
+    assert body["state"]["audio_clips"][1]["timeline_start_sec"] == pytest.approx(2.0)
+    assert body["state"]["audio_clips"][1]["duration_sec"] == pytest.approx(5.0)
+
+    # Yksi Undo palauttaa sekä videon että äänen
+    undone = client.post("/api/undo")
+    assert undone.status_code == 200
+    u_state = undone.json()["state"]
+    assert u_state["total_duration_sec"] == pytest.approx(10.0)
+    assert u_state["audio_clip_count"] == 1
+    assert u_state["audio_clips"][0]["duration_sec"] == pytest.approx(10.0)
+
+
+def test_audio_remove_endpoint_and_undo(client: TestClient, workspace: Path):
+    from model.timeline import AudioClip
+
+    _upload_video(client)
+    audio_file = workspace / "detached2.m4a"
+    audio_file.write_bytes(b"fake-audio")
+    editor = client.editor  # type: ignore[attr-defined]
+    editor.timeline.audio_clips = [
+        AudioClip(
+            id="ac_1",
+            source_path=str(audio_file),
+            in_point=0.0,
+            out_point=10.0,
+            timeline_start=0.0,
+        )
+    ]
+
+    rem = client.post("/api/audio", json={"action": "remove", "clip_index": 1})
+    assert rem.status_code == 200
+    assert rem.json()["ok"] is True
+    assert rem.json()["state"]["audio_clip_count"] == 0
+
+    # Undo palauttaa poistetun ääniklipin
+    undone = client.post("/api/undo")
+    assert undone.status_code == 200
+    assert undone.json()["state"]["audio_clip_count"] == 1

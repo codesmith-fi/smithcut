@@ -7,7 +7,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700&family=Syne:wght@600;700;800&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="/style.css?v=3" />
+  <link rel="stylesheet" href="/style.css?v=4" />
 </head>
 <body>
   <div class="app">
@@ -55,6 +55,15 @@
             <span class="scrubber-label" data-i18n="scrubberLabel">Aikajana</span>
             <div class="scrubber-meta-right">
               <span class="scrubber-selection" id="scrubber-selection" hidden></span>
+              <button
+                type="button"
+                class="scrubber-delete"
+                id="scrubber-delete-selection"
+                hidden
+                data-i18n="deleteSelection"
+                data-i18n-title="deleteSelection"
+                title="Poista valittu alue"
+              >Poista valittu alue</button>
               <button
                 type="button"
                 class="scrubber-clear"
@@ -203,6 +212,6 @@
     </form>
   </dialog>
 
-  <script src="/app.js?v=3" type="module"></script>
+  <script src="/app.js?v=5" type="module"></script>
 </body>
 </html>

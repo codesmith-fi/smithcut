@@ -384,7 +384,8 @@ body {
   min-width: 0;
 }
 
-.scrubber-clear {
+.scrubber-clear,
+.scrubber-delete {
   flex: 0 0 auto;
   border-radius: 8px;
   border: 1px solid var(--line);
@@ -401,6 +402,18 @@ body {
 .scrubber-clear:hover {
   border-color: var(--accent);
   color: var(--accent);
+}
+
+.scrubber-delete {
+  border-color: color-mix(in srgb, var(--danger) 45%, var(--line));
+  background: color-mix(in srgb, var(--danger) 14%, var(--bg-1));
+  color: color-mix(in srgb, var(--danger) 90%, var(--text));
+}
+
+.scrubber-delete:hover {
+  border-color: var(--danger);
+  background: color-mix(in srgb, var(--danger) 24%, var(--bg-1));
+  color: #fff;
 }
 
 .scrubber-timecode {
@@ -509,6 +522,13 @@ body {
   z-index: 1;
 }
 
+.scrubber-block.is-selected {
+  border-color: #fff;
+  background: color-mix(in srgb, var(--accent) 55%, var(--bg-1));
+  box-shadow: 0 0 0 1.5px var(--accent), inset 0 0 0 1px rgba(255, 255, 255, 0.45);
+  z-index: 2;
+}
+
 .scrubber-audio-block {
   position: absolute;
   top: 0;
@@ -522,6 +542,13 @@ body {
 
 .scrubber-audio-block:nth-child(odd) {
   background: color-mix(in srgb, var(--warn) 30%, var(--bg-1));
+}
+
+.scrubber-audio-block.is-selected {
+  border-color: #fff;
+  background: color-mix(in srgb, var(--warn) 48%, var(--bg-1));
+  box-shadow: 0 0 0 1.5px var(--warn), inset 0 0 0 1px rgba(255, 255, 255, 0.45);
+  z-index: 2;
 }
 
 .scrubber-audio-block span {
