@@ -3,9 +3,6 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
-import hashlib
-import json
-import os
 import threading
 import uuid
 from collections.abc import Iterator
@@ -19,6 +16,23 @@ from compiler.ffmpeg import (
 )
 from compiler.ffmpeg import render as ffmpeg_render
 from compiler.ffprobe import probe, probe_audio
+from controller.media_cache import cached_clip_thumbnail, cached_still_frame
+from controller.persistence import (
+    PROJECT_STATE_FILENAME,
+    PROJECT_STATE_VERSION,
+    cleanup_workspace,
+    load_project_state,
+    project_state_path,
+    save_project_state,
+)
+from controller.summary import (
+    _CHAT_STUB,
+    _SUMMARY_I18N,
+    build_state_summary,
+    chat_stub_reply,
+    format_timecode,
+    normalize_lang,
+)
 from model.history import HistoryManager
 from model.timeline import (
     AudioClip,
@@ -33,9 +47,6 @@ from model.timeline import (
     ZoomEffect,
 )
 
-PROJECT_STATE_FILENAME = "project_state.json"
-PROJECT_STATE_VERSION = 1
-
 REGION_TARGETS: dict[str, tuple[float, float]] = {
     "center": (0.5, 0.5),
     "top": (0.5, 0.25),
@@ -48,93 +59,9 @@ REGION_TARGETS: dict[str, tuple[float, float]] = {
     "bottom_right": (0.75, 0.75),
 }
 
-_SUMMARY_I18N: dict[str, dict[str, Any]] = {
-    "fi": {
-        "clip_title": "Klippi {n}",
-        "effect_zoom": "Zoom",
-        "effect_text": "Teksti",
-        "effect_blur": "Blur",
-        "bgm_on": "Taustamusiikki käytössä",
-        "audio_track": "Ääniraita {n}",
-        "video_audio_muted": "Videon oma ääni mykistetty",
-        "video_audio_on": "Videon oma ääni käytössä",
-        "fade_in_out": "Alku­häivytys {fade_in} s, loppuhäivytys {fade_out} s",
-        "fade_in_only": "Alku­häivytys {fade_in} s",
-        "fade_out_only": "Loppuhäivytys {fade_out} s",
-        "audio_clip": "A{n}",
-        "empty": "Aikajana on tyhjä – tuo video aloittaaksesi.",
-        "description": (
-            "Aikajanalla on {count} klippiä, kokonaiskesto {duration} s, "
-            "siirtymiä {transitions}."
-        ),
-        "transitions": {
-            "fadeblack": "Pimennys",
-            "fade": "Häivytys",
-            "wipeleft": "Pyyhkäisy vasemmalle",
-            "wiperight": "Pyyhkäisy oikealle",
-        },
-    },
-    "en": {
-        "clip_title": "Clip {n}",
-        "effect_zoom": "Zoom",
-        "effect_text": "Text",
-        "effect_blur": "Blur",
-        "bgm_on": "Background music on",
-        "audio_track": "Audio track {n}",
-        "video_audio_muted": "Video audio muted",
-        "video_audio_on": "Video audio on",
-        "fade_in_out": "Fade in {fade_in} s, fade out {fade_out} s",
-        "fade_in_only": "Fade in {fade_in} s",
-        "fade_out_only": "Fade out {fade_out} s",
-        "audio_clip": "A{n}",
-        "empty": "Timeline is empty — import a video to get started.",
-        "description": (
-            "Timeline has {count} clip(s), total duration {duration} s, "
-            "{transitions} transition(s)."
-        ),
-        "transitions": {
-            "fadeblack": "Fade to black",
-            "fade": "Fade",
-            "wipeleft": "Wipe left",
-            "wiperight": "Wipe right",
-        },
-    },
-}
-
-_CHAT_STUB: dict[str, str] = {
-    "fi": (
-        "Paikallinen kielimalli ei ole vielä kytketty. "
-        "Käytä toistaiseksi klippinauhaa, zoomausta esikatselusta "
-        "tai pikakomentoja. (Vaihe 3: Ollama / Qwen)"
-    ),
-    "en": (
-        "The local language model is not connected yet. "
-        "For now use the clip strip, preview zoom, or quick actions. "
-        "(Phase 3: Ollama / Qwen)"
-    ),
-}
-
-
-def normalize_lang(lang: str | None) -> str:
-    value = (lang or "fi").strip().lower()
-    return value if value in _SUMMARY_I18N else "fi"
-
-
-def chat_stub_reply(lang: str = "fi") -> str:
-    """Vaiheen 3 valmiusviesti käyttöliittymän kielellä."""
-    return _CHAT_STUB[normalize_lang(lang)]
-
 
 def _new_id(prefix: str) -> str:
     return f"{prefix}_{uuid.uuid4().hex[:8]}"
-
-
-def format_timecode(sec: float) -> str:
-    """Muotoile sekunnit MM:SS.d -aikakoodiksi."""
-    sec = max(0.0, float(sec))
-    minutes = int(sec // 60)
-    seconds = sec - minutes * 60
-    return f"{minutes:02d}:{seconds:04.1f}"
 
 
 class EditorController:
@@ -179,105 +106,32 @@ class EditorController:
     # ------------------------------------------------------------------
 
     def _project_state_path(self) -> Path:
-        return Path(self.workspace) / PROJECT_STATE_FILENAME
+        return project_state_path(self.workspace)
 
     def _persist(self) -> None:
         """Tallenna projektin tila atomisesti workspace/project_state.json -tiedostoon."""
         if not self._persist_enabled:
             return
         with self._lock:
-            path = self._project_state_path()
-            payload = {
-                "version": PROJECT_STATE_VERSION,
-                "playhead_sec": self.playhead_sec,
-                "selection_start_sec": self.selection_start_sec,
-                "selection_end_sec": self.selection_end_sec,
-                "timeline": self.timeline.model_dump(mode="json"),
-            }
-            tmp = path.with_name(f".{path.name}.{uuid.uuid4().hex[:8]}.tmp")
-            try:
-                tmp.write_text(
-                    json.dumps(payload, ensure_ascii=False, indent=2),
-                    encoding="utf-8",
-                )
-                os.replace(tmp, path)
+            saved = save_project_state(
+                self.workspace,
+                self.timeline,
+                playhead_sec=self.playhead_sec,
+                selection_start_sec=self.selection_start_sec,
+                selection_end_sec=self.selection_end_sec,
+            )
+            if saved:
                 self._state_dirty = False
-            except OSError:
-                try:
-                    tmp.unlink(missing_ok=True)
-                except OSError:
-                    pass
 
     def _load_project_state(self) -> bool:
         """Lataa tila levyltä jos lähdevideot ovat yhä olemassa. Palauta True jos ok."""
-        path = self._project_state_path()
-        if not path.is_file():
+        loaded = load_project_state(self.workspace)
+        if loaded is None:
             return False
-        try:
-            data = json.loads(path.read_text(encoding="utf-8"))
-            raw_tl = data.get("timeline") or {}
-            timeline = Timeline.model_validate(raw_tl)
-        except (OSError, json.JSONDecodeError, ValueError, TypeError):
-            return False
-
-        # Pidä vain lähteet joiden tiedostot ovat levyllä
-        kept_sources: dict[str, VideoSource] = {}
-        for sid, source in timeline.sources.items():
-            if Path(source.path).is_file():
-                kept_sources[sid] = source
-        if not kept_sources and timeline.sources:
-            return False
-
-        kept_clips = [c for c in timeline.clips if c.source_id in kept_sources]
-        n = len(kept_clips)
-        kept_transitions = [
-            t
-            for t in timeline.transitions
-            if 0 <= t.after_clip_index < n - 1
-        ]
-        bgm = timeline.bgm
-        if bgm is not None and not Path(bgm.path).is_file():
-            bgm = None
-
-        kept_audio = [
-            t for t in timeline.audio_tracks if Path(t.path).is_file()
-        ]
-        active_id = timeline.active_audio_track_id
-        if active_id and not any(t.id == active_id for t in kept_audio):
-            active_id = None
-        kept_audio_clips = [
-            c for c in timeline.audio_clips if Path(c.source_path).is_file()
-        ]
-
-        self.timeline = Timeline(
-            sources=kept_sources,
-            clips=kept_clips,
-            transitions=kept_transitions,
-            bgm=bgm,
-            mute_video_audio=timeline.mute_video_audio,
-            audio_tracks=kept_audio,
-            active_audio_track_id=active_id,
-            active_audio_start_sec=timeline.active_audio_start_sec,
-            audio_clips=kept_audio_clips,
-            fade_in_sec=timeline.fade_in_sec,
-            fade_out_sec=timeline.fade_out_sec,
-            fade_audio=timeline.fade_audio,
-            output_fps=timeline.output_fps,
-        )
-        try:
-            self.playhead_sec = float(data.get("playhead_sec") or 0.0)
-        except (TypeError, ValueError):
-            self.playhead_sec = 0.0
-        start = data.get("selection_start_sec")
-        end = data.get("selection_end_sec")
-        try:
-            self.selection_start_sec = (
-                float(start) if start is not None else None
-            )
-            self.selection_end_sec = float(end) if end is not None else None
-        except (TypeError, ValueError):
-            self.selection_start_sec = None
-            self.selection_end_sec = None
+        self.timeline = loaded.timeline
+        self.playhead_sec = loaded.playhead_sec
+        self.selection_start_sec = loaded.selection_start_sec
+        self.selection_end_sec = loaded.selection_end_sec
         self._clamp_selection_to_total()
         total = self.timeline.total_duration()
         self.playhead_sec = (
@@ -1114,77 +968,9 @@ class EditorController:
     def reset_project(self, delete_media: bool = False) -> dict[str, Any]:
         """Nollaa aikajana, historia ja session väliaikaistiedostot."""
         with self._lock:
-            removed: list[str] = []
-            ws = Path(self.workspace)
-            ws.mkdir(parents=True, exist_ok=True)
-
-            # Renderöidyt esikatselu-/vientivideot workspace-juuressa
-            render_globs = (
-                "preview*.mp4",
-                "export*.mp4",
-                "final*.mp4",
-                "cutsmith_*.mp4",
+            removed = cleanup_workspace(
+                self.workspace, delete_media=bool(delete_media)
             )
-            for pattern in render_globs:
-                for path in ws.glob(pattern):
-                    if path.is_file():
-                        try:
-                            path.unlink()
-                            removed.append(path.name)
-                        except OSError:
-                            pass
-
-            # Väliaikaiset alikansiot (frames, thumbnails, extracted audio)
-            for sub in ("frames", "thumbnails", "audio"):
-                folder = ws / sub
-                if not folder.is_dir():
-                    continue
-                for path in folder.iterdir():
-                    if path.name == ".gitkeep":
-                        continue
-                    try:
-                        if path.is_file() or path.is_symlink():
-                            path.unlink()
-                            removed.append(f"{sub}/{path.name}")
-                        elif path.is_dir():
-                            # älä poista sisäkkäisiä kansioita aggressiivisesti
-                            pass
-                    except OSError:
-                        pass
-
-            state_path = self._project_state_path()
-            if state_path.is_file():
-                try:
-                    state_path.unlink()
-                    removed.append(PROJECT_STATE_FILENAME)
-                except OSError:
-                    pass
-
-            if delete_media:
-                media_ext = {
-                    ".mp4",
-                    ".mov",
-                    ".mkv",
-                    ".webm",
-                    ".avi",
-                    ".m4v",
-                    ".mp3",
-                    ".wav",
-                    ".aac",
-                    ".m4a",
-                    ".ogg",
-                    ".flac",
-                }
-                for path in ws.iterdir():
-                    if path.name == ".gitkeep":
-                        continue
-                    if path.is_file() and path.suffix.lower() in media_ext:
-                        try:
-                            path.unlink()
-                            removed.append(path.name)
-                        except OSError:
-                            pass
-
             # Tuore tyhjä tila
             self.timeline = Timeline()
             self.history.clear()
@@ -1204,228 +990,19 @@ class EditorController:
     def get_state_summary(self, lang: str = "fi") -> dict[str, Any]:
         """Selkokielinen 1-pohjainen yhteenveto UI:ta ja LLM:ää varten."""
         with self._lock:
-            return self._build_state_summary(lang=lang)
-
-    def _build_state_summary(self, lang: str = "fi") -> dict[str, Any]:
-        lang = normalize_lang(lang)
-        L = _SUMMARY_I18N[lang]
-
-        spans = self.clip_spans()
-        span_by_index = {i: (start, end) for i, start, end in spans}
-
-        clips_summary = []
-        for i, clip in enumerate(self.timeline.clips):
-            source = self.timeline.sources.get(clip.source_id)
-            effects = []
-            for effect in clip.effects:
-                if isinstance(effect, ZoomEffect):
-                    effects.append(
-                        {
-                            "type": "zoom",
-                            "label": L["effect_zoom"],
-                            "start_sec": effect.start_sec,
-                            "duration": effect.duration,
-                            "target_x": effect.target_x,
-                            "target_y": effect.target_y,
-                            "zoom_factor": effect.zoom_factor,
-                        }
-                    )
-                elif isinstance(effect, TextEffect):
-                    effects.append(
-                        {
-                            "type": "text",
-                            "label": L["effect_text"],
-                            "text": effect.text,
-                            "start_sec": effect.start_sec,
-                            "duration": effect.duration,
-                            "position": effect.position,
-                            "font_style": effect.font_style,
-                        }
-                    )
-                elif isinstance(effect, BlurEffect):
-                    effects.append(
-                        {
-                            "type": "blur",
-                            "label": L["effect_blur"],
-                            "start_sec": effect.start_sec,
-                            "end_sec": effect.end_sec,
-                            "duration": effect.duration,
-                            "max_sigma": effect.max_sigma,
-                            "fade_sec": effect.fade_sec,
-                        }
-                    )
-            clip_index = i + 1
-            t_start, t_end = span_by_index.get(i, (0.0, clip.duration))
-            clips_summary.append(
-                {
-                    "index": clip_index,
-                    "title": L["clip_title"].format(n=clip_index),
-                    "id": clip.id,
-                    "source_id": clip.source_id,
-                    "source_path": source.path if source else None,
-                    "in_sec": clip.in_sec,
-                    "trim_start": clip.in_sec,
-                    "out_sec": clip.out_sec,
-                    "duration_sec": round(clip.duration, 3),
-                    "timeline_start_sec": round(t_start, 3),
-                    "timeline_end_sec": round(t_end, 3),
-                    "speed": clip.speed,
-                    "effects": effects,
-                }
+            total = round(self.timeline.total_duration(), 3)
+            self.playhead_sec = min(self.playhead_sec, total) if total > 0 else 0.0
+            self._clamp_selection_to_total(total)
+            return build_state_summary(
+                self.timeline,
+                self.clip_spans(),
+                playhead_sec=self.playhead_sec,
+                selection_start_sec=self.selection_start_sec,
+                selection_end_sec=self.selection_end_sec,
+                can_undo=self.history.can_undo(),
+                can_redo=self.history.can_redo(),
+                lang=lang,
             )
-
-        transitions_summary = []
-        for t in self.timeline.transitions:
-            after = t.after_clip_index + 1
-            transitions_summary.append(
-                {
-                    "after_clip": after,
-                    "type": t.type,
-                    "label": L["transitions"].get(t.type, t.type),
-                    "duration_sec": t.duration,
-                }
-            )
-
-        sources_summary = [
-            {
-                "id": s.id,
-                "path": s.path,
-                "duration_sec": round(s.duration, 3),
-                "resolution": f"{s.width}x{s.height}",
-                "fps": s.fps,
-                "has_audio": s.has_audio,
-            }
-            for s in self.timeline.sources.values()
-        ]
-
-        bgm = None
-        if self.timeline.bgm is not None:
-            bgm = {
-                "path": self.timeline.bgm.path,
-                "bgm_volume": self.timeline.bgm.bgm_volume,
-                "sfx_volume": self.timeline.bgm.sfx_volume,
-                "fade_out_sec": self.timeline.bgm.fade_out_sec,
-                "label": L["bgm_on"],
-            }
-
-        active_id = self.timeline.active_audio_track_id
-        audio_tracks_summary = []
-        for i, track in enumerate(self.timeline.audio_tracks):
-            audio_tracks_summary.append(
-                {
-                    "index": i + 1,
-                    "id": track.id,
-                    "path": track.path,
-                    "duration_sec": round(track.duration, 3),
-                    "origin": track.origin,
-                    "label": L["audio_track"].format(n=i + 1),
-                    "active": track.id == active_id,
-                }
-            )
-
-        audio_clips_summary = []
-        for i, ac in enumerate(self.timeline.audio_clips):
-            t_end = ac.timeline_start + ac.duration
-            audio_clips_summary.append(
-                {
-                    "index": i + 1,
-                    "id": ac.id,
-                    "label": L["audio_clip"].format(n=i + 1),
-                    "source_path": ac.source_path,
-                    "in_point": round(ac.in_point, 3),
-                    "out_point": round(ac.out_point, 3),
-                    "timeline_start_sec": round(ac.timeline_start, 3),
-                    "timeline_end_sec": round(t_end, 3),
-                    "duration_sec": round(ac.duration, 3),
-                    "volume": ac.volume,
-                    "fade_in_sec": ac.fade_in_sec,
-                    "fade_out_sec": ac.fade_out_sec,
-                }
-            )
-
-        total = round(self.timeline.total_duration(), 3)
-        n_clips = len(self.timeline.clips)
-        if n_clips == 0:
-            description = L["empty"]
-        else:
-            description = L["description"].format(
-                count=n_clips,
-                duration=total,
-                transitions=len(self.timeline.transitions),
-            )
-
-        # Pidä playhead / valinta synkassa kokonaiskestoon
-        self.playhead_sec = min(self.playhead_sec, total) if total > 0 else 0.0
-        self._clamp_selection_to_total(total)
-
-        sel_start = self.selection_start_sec
-        sel_end = self.selection_end_sec
-        sel_duration = None
-        if sel_start is not None and sel_end is not None:
-            sel_duration = round(sel_end - sel_start, 3)
-
-        return {
-            "lang": lang,
-            "description": description,
-            "clip_count": n_clips,
-            "clips": clips_summary,
-            "transitions": transitions_summary,
-            "sources": sources_summary,
-            "bgm": bgm,
-            "mute_video_audio": self.timeline.mute_video_audio,
-            "video_audio_status": (
-                L["video_audio_muted"]
-                if self.timeline.mute_video_audio
-                else L["video_audio_on"]
-            ),
-            "audio_tracks": audio_tracks_summary,
-            "active_audio_track_index": next(
-                (t["index"] for t in audio_tracks_summary if t["active"]),
-                None,
-            ),
-            "active_audio_start_sec": self.timeline.active_audio_start_sec,
-            "audio_clips": audio_clips_summary,
-            "audio_clip_count": len(audio_clips_summary),
-            "fade_in_sec": round(self.timeline.fade_in_sec, 3),
-            "fade_out_sec": round(self.timeline.fade_out_sec, 3),
-            "fade_audio": self.timeline.fade_audio,
-            "timeline_fade_label": (
-                L["fade_in_out"].format(
-                    fade_in=round(self.timeline.fade_in_sec, 2),
-                    fade_out=round(self.timeline.fade_out_sec, 2),
-                )
-                if self.timeline.fade_in_sec > 0 and self.timeline.fade_out_sec > 0
-                else (
-                    L["fade_in_only"].format(
-                        fade_in=round(self.timeline.fade_in_sec, 2)
-                    )
-                    if self.timeline.fade_in_sec > 0
-                    else (
-                        L["fade_out_only"].format(
-                            fade_out=round(self.timeline.fade_out_sec, 2)
-                        )
-                        if self.timeline.fade_out_sec > 0
-                        else None
-                    )
-                )
-            ),
-            "total_duration_sec": total,
-            "output_fps": self.timeline.output_fps,
-            "playhead_sec": round(self.playhead_sec, 3),
-            "playhead_timecode": format_timecode(self.playhead_sec),
-            "selection_start_sec": (
-                round(sel_start, 3) if sel_start is not None else None
-            ),
-            "selection_end_sec": round(sel_end, 3) if sel_end is not None else None,
-            "selection_duration_sec": sel_duration,
-            "selection_timecode": (
-                f"{format_timecode(sel_start)} – {format_timecode(sel_end)}"
-                if sel_start is not None and sel_end is not None
-                else None
-            ),
-            "can_undo": self.history.can_undo(),
-            "can_redo": self.history.can_redo(),
-        }
 
     # ------------------------------------------------------------------
     # Playhead & aikavälileikkaus
@@ -1486,26 +1063,22 @@ class EditorController:
 
     def get_frame_at_time(self, sec: float) -> Path:
         """Poimi still-JPEG aikajanan kohdasta (välimuisti workspace/frames/)."""
-        located = self.locate_timeline_sec(sec)
-        if located is None:
-            raise ValueError("timeline has no clips")
-        _clip_index, source_ts = located
-        clip = self.timeline.clips[_clip_index]
-        source = self.timeline.sources[clip.source_id]
-        source_path = Path(source.path)
-        try:
-            mtime = source_path.stat().st_mtime if source_path.is_file() else 0.0
-        except OSError:
-            mtime = 0.0
-        digest = hashlib.sha256(
-            f"{source_path.resolve()}|{mtime:.6f}|{source_ts:.3f}".encode()
-        ).hexdigest()[:16]
-        frames_dir = Path(self.workspace) / "frames"
-        frames_dir.mkdir(parents=True, exist_ok=True)
-        output = frames_dir / f"{digest}.jpg"
-        if output.is_file() and output.stat().st_size > 0:
-            return output
-        return extract_still_frame(source_path, source_ts, output, scale="960:-1")
+        with self._lock:
+            located = self.locate_timeline_sec(sec)
+            if located is None:
+                raise ValueError("timeline has no clips")
+            clip_index, source_ts = located
+            clip = self.timeline.clips[clip_index]
+            source = self.timeline.sources[clip.source_id]
+            source_path = Path(source.path)
+            workspace = self.workspace
+        return cached_still_frame(
+            workspace,
+            source_path,
+            source_ts,
+            extractor=extract_still_frame,
+            scale="960:-1",
+        )
 
     def _effects_for_subclip(
         self,
@@ -1873,29 +1446,20 @@ class EditorController:
             raise IndexError(
                 f"clip index must be 1-based (got {index}); first clip is 1"
             )
-        clip = self._clip(index - 1)
-        source = self.timeline.sources.get(clip.source_id)
-        if source is None:
-            raise KeyError(f"unknown source_id {clip.source_id!r}")
-
-        source_path = Path(source.path)
-        trim_start = float(clip.in_sec)
-        try:
-            mtime = source_path.stat().st_mtime if source_path.is_file() else 0.0
-        except OSError:
-            mtime = 0.0
-
-        digest = hashlib.sha256(
-            f"{source_path.resolve()}|{mtime:.6f}|{trim_start:.6f}".encode()
-        ).hexdigest()[:16]
-        thumb_dir = Path(self.workspace) / "thumbnails"
-        thumb_dir.mkdir(parents=True, exist_ok=True)
-        output_path = thumb_dir / f"{digest}.jpg"
-
-        if output_path.is_file() and output_path.stat().st_size > 0:
-            return output_path
-
-        return extract_clip_thumbnail(source_path, trim_start, output_path)
+        with self._lock:
+            clip = self._clip(index - 1)
+            source = self.timeline.sources.get(clip.source_id)
+            if source is None:
+                raise KeyError(f"unknown source_id {clip.source_id!r}")
+            source_path = Path(source.path)
+            trim_start = float(clip.in_sec)
+            workspace = self.workspace
+        return cached_clip_thumbnail(
+            workspace,
+            source_path,
+            trim_start,
+            extractor=extract_clip_thumbnail,
+        )
 
     def render(self, mode: str = "preview") -> str:
         if mode not in ("preview", "final", "export"):

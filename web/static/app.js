@@ -1,3 +1,12 @@
+/** CutSmith Web UI – päämoduuli (esikatselu, klippinauha, ääniraidat ja chat). */
+
+import {
+  api,
+  setProgressBar,
+  setStatus,
+  showReply,
+  startProgressPoll,
+} from "./api.js";
 import {
   applyDomTranslations,
   getLang,
@@ -6,525 +15,25 @@ import {
   t,
   transitionLabels,
 } from "./i18n.js";
-
-const state = {
-  summary: null,
-  selectedClip: 1,
-  busy: false,
-  pollTimer: null,
-  playheadSec: 0,
-  scrubbing: false,
-  stillMode: false,
-  scrubThrottleTimer: null,
-  scrubPendingSec: null,
-  lastPostedPlayhead: null,
-  selectionStart: null,
-  selectionEnd: null,
-  selecting: false,
-  selectAnchor: null,
-  selectMode: null, // "paint" | "start" | "end"
-  selectionThrottleTimer: null,
-  lastPostedSelection: null,
-  lastReply: null,
-};
-
-const SCRUB_THROTTLE_MS = 100;
-const SELECTION_MIN_SEC = 0.05;
-
-const els = {
-  status: document.getElementById("status"),
-  undo: document.getElementById("btn-undo"),
-  redo: document.getElementById("btn-redo"),
-  newProject: document.getElementById("btn-new-project"),
-  exportBtn: document.getElementById("btn-export"),
-  preview: document.getElementById("preview"),
-  stillFrame: document.getElementById("still-frame"),
-  previewStage: document.getElementById("preview-stage"),
-  previewEmpty: document.getElementById("preview-empty"),
-  zoomToast: document.getElementById("zoom-toast"),
-  scrubber: document.getElementById("scrubber"),
-  scrubberTrack: document.getElementById("scrubber-track"),
-  scrubberBlocks: document.getElementById("scrubber-blocks"),
-  scrubberAudioLane: document.getElementById("scrubber-audio-lane"),
-  scrubberAudioBlocks: document.getElementById("scrubber-audio-blocks"),
-  scrubberTicks: document.getElementById("scrubber-ticks"),
-  scrubberPlayhead: document.getElementById("scrubber-playhead"),
-  scrubberTimecode: document.getElementById("scrubber-timecode"),
-  scrubberSelection: document.getElementById("scrubber-selection"),
-  scrubberSelectionRange: document.getElementById("scrubber-selection-range"),
-  scrubberClear: document.getElementById("scrubber-clear"),
-  scrubberHandleStart: document.getElementById("scrubber-handle-start"),
-  scrubberHandleEnd: document.getElementById("scrubber-handle-end"),
-  dropzone: document.getElementById("dropzone"),
-  fileInput: document.getElementById("file-input"),
-  libraryMeta: document.getElementById("library-meta"),
-  audioPanel: document.getElementById("audio-panel"),
-  audioStatus: document.getElementById("audio-status"),
-  audioTrackList: document.getElementById("audio-track-list"),
-  clipStrip: document.getElementById("clip-strip"),
-  audioTimeline: document.getElementById("audio-timeline"),
-  audioTimelineMeta: document.getElementById("audio-timeline-meta"),
-  audioClipList: document.getElementById("audio-clip-list"),
-  timelineDuration: document.getElementById("timeline-duration"),
-  commandForm: document.getElementById("command-form"),
-  commandInput: document.getElementById("command-input"),
-  commandReply: document.getElementById("command-reply"),
-  textModal: document.getElementById("text-modal"),
-  textForm: document.getElementById("text-form"),
-  textValue: document.getElementById("text-value"),
-  textPosition: document.getElementById("text-position"),
-  textFontStyle: document.getElementById("text-font-style"),
-  textCancel: document.getElementById("text-cancel"),
-  progress: document.getElementById("topbar-progress"),
-  progressBar: document.getElementById("topbar-progress-bar"),
-};
-
-function setStatus(message, busy = false) {
-  state.busy = busy;
-  els.status.textContent = message;
-  els.status.classList.toggle("is-busy", busy);
-  if (!busy) {
-    stopProgressPoll();
-    setProgressBar(null);
-  }
-}
-
-function setProgressBar(percent) {
-  if (!els.progress || !els.progressBar) return;
-  if (percent === null || percent === undefined) {
-    els.progress.hidden = true;
-    els.progress.classList.remove("is-indeterminate");
-    els.progressBar.style.width = "0%";
-    return;
-  }
-  els.progress.hidden = false;
-  if (percent < 0) {
-    els.progress.classList.add("is-indeterminate");
-    els.progressBar.style.width = "35%";
-  } else {
-    els.progress.classList.remove("is-indeterminate");
-    els.progressBar.style.width = `${Math.min(100, Math.max(0, percent))}%`;
-  }
-}
-
-function statusFromProgress(progress) {
-  if (!progress || !progress.active) return t("ready");
-  const phase = progress.phase;
-  const pct = progress.percent;
-  if (phase === "chat") return t("processingCommandQwen");
-  if (phase === "export") {
-    return pct == null ? t("creatingFinal") : t("creatingFinalPct", { percent: pct });
-  }
-  if (phase === "preview") {
-    return pct == null ? t("updatingPreview") : t("updatingPreviewPct", { percent: pct });
-  }
-  return progress.detail || t("updating");
-}
-
-function applyProgress(progress) {
-  if (!progress || !progress.active) {
-    setProgressBar(null);
-    return;
-  }
-  setStatus(statusFromProgress(progress), true);
-  if (progress.phase === "chat" || progress.percent == null) {
-    setProgressBar(-1);
-  } else {
-    setProgressBar(progress.percent);
-  }
-}
-
-function stopProgressPoll() {
-  if (state.pollTimer) {
-    clearInterval(state.pollTimer);
-    state.pollTimer = null;
-  }
-}
-
-function startProgressPoll() {
-  stopProgressPoll();
-  const tick = async () => {
-    try {
-      const data = await fetch("/api/status").then((r) => r.json());
-      if (data?.progress) applyProgress(data.progress);
-    } catch {
-      /* pollausvirheet eivät keskeytä päätoimintoa */
-    }
-  };
-  tick();
-  state.pollTimer = setInterval(tick, 300);
-}
-
-function withLang(path) {
-  const url = new URL(path, window.location.origin);
-  url.searchParams.set("lang", getLang());
-  return url.pathname + url.search;
-}
-
-async function api(path, options = {}) {
-  const res = await fetch(withLang(path), options);
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok || data.ok === false) {
-    throw new Error(data.error || data.detail || t("errorStatus", { status: res.status }));
-  }
-  return data;
-}
-
-function formatSeconds(sec) {
-  const n = Number(sec) || 0;
-  if (n < 60) {
-    return t("seconds", { n: n.toFixed(1).replace(/\.0$/, "") });
-  }
-  const m = Math.floor(n / 60);
-  const s = (n % 60).toFixed(1).replace(/\.0$/, "");
-  return t("minutesSeconds", { m, s });
-}
-
-function formatTimecode(sec) {
-  const n = Math.max(0, Number(sec) || 0);
-  const m = Math.floor(n / 60);
-  const s = n - m * 60;
-  return `${String(m).padStart(2, "0")}:${s.toFixed(1).padStart(4, "0")}`;
-}
-
-function totalDuration() {
-  return Math.max(0, Number(state.summary?.total_duration_sec) || 0);
-}
-
-function clampPlayhead(sec) {
-  const total = totalDuration();
-  if (total <= 0) return 0;
-  return Math.min(total, Math.max(0, Number(sec) || 0));
-}
-
-function isActivelyScrubbing() {
-  return Boolean(state.scrubbing || state.selecting);
-}
-
-function setStillMode(on) {
-  // Still vain aktiivisen scrub/valinta-raahauksen aikana
-  const enabled = Boolean(on) && isActivelyScrubbing();
-  state.stillMode = enabled;
-  els.previewStage?.classList.toggle("is-scrubbing", enabled);
-  if (els.stillFrame) {
-    els.stillFrame.hidden = !enabled;
-    if (!enabled) {
-      els.stillFrame.removeAttribute("src");
-    }
-  }
-}
-
-function showStillAt(sec) {
-  if (!els.stillFrame || !isActivelyScrubbing()) return;
-  const tSec = clampPlayhead(sec);
-  setStillMode(true);
-  els.stillFrame.src = `/api/timeline/frame?t=${encodeURIComponent(tSec.toFixed(3))}&_=${Date.now()}`;
-}
-
-function hideStillAndSyncVideo() {
-  setStillMode(false);
-  if (!els.preview?.src) return;
-  try {
-    els.preview.currentTime = clampPlayhead(state.playheadSec);
-  } catch {
-    /* ignore seek errors */
-  }
-}
-
-function updatePlayheadUi(sec) {
-  const value = clampPlayhead(sec);
-  state.playheadSec = value;
-  const total = totalDuration();
-  const pct = total > 0 ? (value / total) * 100 : 0;
-  if (els.scrubberPlayhead) {
-    els.scrubberPlayhead.style.left = `${pct}%`;
-  }
-  if (els.scrubberTimecode) {
-    els.scrubberTimecode.textContent = formatTimecode(value);
-  }
-  if (els.scrubberTrack) {
-    els.scrubberTrack.setAttribute("aria-valuenow", String(Math.round(value * 10) / 10));
-    els.scrubberTrack.setAttribute("aria-valuemax", String(total));
-  }
-}
-
-function postPlayhead(sec) {
-  const value = clampPlayhead(sec);
-  if (
-    state.lastPostedPlayhead != null &&
-    Math.abs(state.lastPostedPlayhead - value) < 0.01
-  ) {
-    return;
-  }
-  state.lastPostedPlayhead = value;
-  fetch(withLang("/api/timeline/playhead"), {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ sec: value }),
-  }).catch(() => {});
-}
-
-function scrubTo(sec, { immediate = false } = {}) {
-  const value = clampPlayhead(sec);
-  updatePlayheadUi(value);
-  state.scrubPendingSec = value;
-
-  const flush = () => {
-    state.scrubThrottleTimer = null;
-    const pending = state.scrubPendingSec;
-    if (pending == null) return;
-    showStillAt(pending);
-    postPlayhead(pending);
-  };
-
-  if (immediate) {
-    if (state.scrubThrottleTimer) {
-      clearTimeout(state.scrubThrottleTimer);
-      state.scrubThrottleTimer = null;
-    }
-    flush();
-    return;
-  }
-
-  if (state.scrubThrottleTimer) return;
-  state.scrubThrottleTimer = setTimeout(flush, SCRUB_THROTTLE_MS);
-}
-
-function normalizeSelection(start, end) {
-  if (start == null || end == null) return { start: null, end: null };
-  let a = clampPlayhead(start);
-  let b = clampPlayhead(end);
-  if (a > b) [a, b] = [b, a];
-  if (b - a < SELECTION_MIN_SEC) return { start: null, end: null };
-  return { start: a, end: b };
-}
-
-function updateSelectionUi(start, end) {
-  const normalized = normalizeSelection(start, end);
-  state.selectionStart = normalized.start;
-  state.selectionEnd = normalized.end;
-  const total = totalDuration();
-  const has =
-    normalized.start != null &&
-    normalized.end != null &&
-    total > 0;
-
-  if (els.scrubberSelectionRange) {
-    els.scrubberSelectionRange.hidden = !has;
-    if (has) {
-      const left = (normalized.start / total) * 100;
-      const width = ((normalized.end - normalized.start) / total) * 100;
-      els.scrubberSelectionRange.style.left = `${left}%`;
-      els.scrubberSelectionRange.style.width = `${Math.max(width, 0.15)}%`;
-    }
-  }
-
-  if (els.scrubberSelection) {
-    els.scrubberSelection.hidden = !has;
-    if (has) {
-      const dur = (normalized.end - normalized.start).toFixed(1).replace(/\.0$/, "");
-      els.scrubberSelection.textContent = t("selectionRange", {
-        start: formatTimecode(normalized.start),
-        end: formatTimecode(normalized.end),
-        duration: dur,
-      });
-    }
-  }
-
-  if (els.scrubberClear) {
-    els.scrubberClear.hidden = !has;
-  }
-}
-
-function postSelection(start, end, { immediate = false } = {}) {
-  const flush = () => {
-    state.selectionThrottleTimer = null;
-    const normalized = normalizeSelection(
-      start ?? state.selectionStart,
-      end ?? state.selectionEnd
-    );
-    const key =
-      normalized.start == null
-        ? "null"
-        : `${normalized.start.toFixed(3)}:${normalized.end.toFixed(3)}`;
-    if (state.lastPostedSelection === key) return;
-    state.lastPostedSelection = key;
-    fetch(withLang("/api/timeline/selection"), {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        start_sec: normalized.start,
-        end_sec: normalized.end,
-      }),
-    }).catch(() => {});
-  };
-
-  if (immediate) {
-    if (state.selectionThrottleTimer) {
-      clearTimeout(state.selectionThrottleTimer);
-      state.selectionThrottleTimer = null;
-    }
-    flush();
-    return;
-  }
-  if (state.selectionThrottleTimer) return;
-  state.selectionThrottleTimer = setTimeout(flush, SCRUB_THROTTLE_MS);
-}
-
-function paintSelectionTo(sec, { immediate = false, edgeSec = null } = {}) {
-  const tip = clampPlayhead(sec);
-  let start;
-  let end;
-  if (state.selectMode === "start") {
-    end = state.selectionEnd ?? tip;
-    start = tip;
-  } else if (state.selectMode === "end") {
-    start = state.selectionStart ?? tip;
-    end = tip;
-  } else {
-    start = state.selectAnchor ?? tip;
-    end = tip;
-  }
-  updateSelectionUi(start, end);
-  const previewSec = edgeSec != null ? edgeSec : tip;
-  updatePlayheadUi(previewSec);
-  const flushEdge = () => {
-    showStillAt(previewSec);
-    postPlayhead(previewSec);
-    postSelection(state.selectionStart, state.selectionEnd, { immediate: true });
-  };
-  if (immediate) {
-    if (state.scrubThrottleTimer) {
-      clearTimeout(state.scrubThrottleTimer);
-      state.scrubThrottleTimer = null;
-    }
-    flushEdge();
-    return;
-  }
-  state.scrubPendingSec = previewSec;
-  if (state.scrubThrottleTimer) return;
-  state.scrubThrottleTimer = setTimeout(() => {
-    state.scrubThrottleTimer = null;
-    showStillAt(state.scrubPendingSec);
-    postPlayhead(state.scrubPendingSec);
-    postSelection(state.selectionStart, state.selectionEnd);
-  }, SCRUB_THROTTLE_MS);
-}
-
-function clearSelectionUiAndServer() {
-  updateSelectionUi(null, null);
-  postSelection(null, null, { immediate: true });
-}
-
-function secFromPointerEvent(e) {
-  if (!els.scrubberTrack) return 0;
-  const rect = els.scrubberTrack.getBoundingClientRect();
-  const x = Math.min(Math.max(e.clientX - rect.left, 0), rect.width || 1);
-  const ratio = rect.width > 0 ? x / rect.width : 0;
-  return clampPlayhead(ratio * totalDuration());
-}
-
-function clipLayoutSpans() {
-  /** Klippien sijainnit siirtymälimityksellä (sama logiikka kuin total_duration). */
-  const clips = state.summary?.clips || [];
-  const transitions = state.summary?.transitions || [];
-  const spans = [];
-  let cursor = 0;
-  clips.forEach((clip, i) => {
-    const dur = Number(clip.duration_sec) || 0;
-    const start =
-      clip.timeline_start_sec != null ? Number(clip.timeline_start_sec) : cursor;
-    const end =
-      clip.timeline_end_sec != null ? Number(clip.timeline_end_sec) : start + dur;
-    spans.push({ clip, start, end, index: clip.index });
-    cursor = end;
-    const tr = transitions.find((item) => item.after_clip === clip.index);
-    if (tr && i < clips.length - 1) {
-      cursor -= Number(tr.duration_sec) || 0;
-    }
-  });
-  return spans;
-}
-
-function renderScrubber() {
-  if (!els.scrubber || !els.scrubberBlocks || !els.scrubberTicks) return;
-  const clips = state.summary?.clips || [];
-  const audioClips = state.summary?.audio_clips || [];
-  const total = totalDuration();
-  els.scrubber.hidden = clips.length === 0 || total <= 0;
-  els.scrubberBlocks.innerHTML = "";
-  if (els.scrubberAudioBlocks) els.scrubberAudioBlocks.innerHTML = "";
-  els.scrubberTicks.innerHTML = "";
-  if (!clips.length || total <= 0) {
-    if (els.scrubberAudioLane) els.scrubberAudioLane.hidden = true;
-    updatePlayheadUi(0);
-    updateSelectionUi(null, null);
-    return;
-  }
-
-  const spans = clipLayoutSpans();
-  spans.forEach(({ clip, start, end }, i) => {
-    const left = (start / total) * 100;
-    const width = Math.max(0.4, ((end - start) / total) * 100);
-    const block = document.createElement("div");
-    const overlapsPrev = i > 0 && start < spans[i - 1].end - 1e-6;
-    block.className =
-      "scrubber-block" + (overlapsPrev ? " is-overlap" : "");
-    block.style.left = `${left}%`;
-    block.style.width = `${width}%`;
-    const label = document.createElement("span");
-    label.textContent = clip.title || t("clipTitle", { n: clip.index });
-    block.appendChild(label);
-    els.scrubberBlocks.appendChild(block);
-  });
-
-  // Erotettu ääniraita samassa aikaskaalassa suoraan videoraidan alla
-  if (els.scrubberAudioLane && els.scrubberAudioBlocks) {
-    const hasAudioLane = audioClips.length > 0;
-    els.scrubberAudioLane.hidden = !hasAudioLane;
-    if (hasAudioLane) {
-      audioClips.forEach((ac) => {
-        const start = Math.max(0, Number(ac.timeline_start_sec) || 0);
-        if (start >= total) return;
-        const dur = Math.max(0.05, Number(ac.duration_sec) || 0.05);
-        const left = (start / total) * 100;
-        const width = Math.max(0.6, Math.min(100 - left, (dur / total) * 100));
-        const block = document.createElement("div");
-        block.className = "scrubber-audio-block";
-        block.style.left = `${left}%`;
-        block.style.width = `${width}%`;
-        const baseLabel = ac.label || t("audioClipLabel", { n: ac.index });
-        const vol = typeof ac.volume === "number" ? ac.volume : 1.0;
-        const volSuffix = Math.abs(vol - 1.0) > 0.01 ? ` (${Math.round(vol * 100)}%)` : "";
-        block.title = `${baseLabel}${volSuffix} · ${formatTimecode(start)} – ${formatTimecode(start + dur)} (${formatSeconds(dur)})`;
-        const span = document.createElement("span");
-        span.textContent = `${baseLabel}${volSuffix}`;
-        block.appendChild(span);
-        els.scrubberAudioBlocks.appendChild(block);
-      });
-    }
-  }
-
-  const step = total <= 10 ? 1 : total <= 30 ? 5 : total <= 120 ? 10 : 30;
-  for (let mark = 0; mark <= total + 1e-9; mark += step) {
-    const tick = document.createElement("div");
-    tick.className = "scrubber-tick";
-    tick.style.left = `${(mark / total) * 100}%`;
-    tick.dataset.label = formatTimecode(mark);
-    els.scrubberTicks.appendChild(tick);
-  }
-
-  updatePlayheadUi(state.summary?.playhead_sec ?? state.playheadSec);
-  updateSelectionUi(
-    state.summary?.selection_start_sec ?? state.selectionStart,
-    state.summary?.selection_end_sec ?? state.selectionEnd
-  );
-}
-
-function transitionForClip(afterClip1Based) {
-  const list = state.summary?.transitions || [];
-  return list.find((item) => item.after_clip === afterClip1Based) || null;
-}
+import {
+  hideStillAndSyncVideo,
+  postPlayhead,
+  renderScrubber,
+  setStillMode,
+  updatePlayheadUi,
+  wireScrubberEvents,
+} from "./scrubber.js";
+import {
+  clampPlayhead,
+  els,
+  formatSeconds,
+  formatTimecode,
+  isActivelyScrubbing,
+  mapTimeToClip,
+  resolvePreviewUrl,
+  state,
+  transitionForClip,
+} from "./state.js";
 
 function applyState(summary) {
   state.summary = summary;
@@ -575,19 +84,10 @@ function applyState(summary) {
   if (!state._skipPreviewUpdate) {
     updatePreview(resolvePreviewUrl(summary));
   }
-  // Säilytä chat-kuittaus tilapäivityksen yli
   if (state.lastReply && els.commandReply) {
     els.commandReply.hidden = false;
     els.commandReply.textContent = state.lastReply;
   }
-}
-
-function resolvePreviewUrl(summary) {
-  if (!summary) return null;
-  if (summary.preview_url) return summary.preview_url;
-  const clipUrl = summary.clips?.find((c) => c.source_url)?.source_url;
-  if (clipUrl) return clipUrl;
-  return summary.sources?.find((s) => s.url)?.url || null;
 }
 
 function updatePreview(url, { forceReload = false } = {}) {
@@ -597,7 +97,6 @@ function updatePreview(url, { forceReload = false } = {}) {
   els.preview.controls = true;
   els.preview.preload = "metadata";
 
-  // Still ei saa estää natiivia Play-painiketta renderöinnin jälkeen
   if (!isActivelyScrubbing()) {
     setStillMode(false);
     if (els.stillFrame) {
@@ -618,7 +117,6 @@ function updatePreview(url, { forceReload = false } = {}) {
   const resume = state.playheadSec || els.preview.currentTime || 0;
   const wasPlaying = !els.preview.paused && !isActivelyScrubbing();
 
-  // Sama URL ilman forceReload: vain seek (vältä musta välähdys)
   if (
     !forceReload &&
     currentBase &&
@@ -687,11 +185,17 @@ function renderAudioTracks(summary) {
     const originKey =
       track.origin === "extracted" ? "audioTrackExtracted" : "audioTrackImported";
     const stateKey = track.active ? "audioTrackActive" : "audioTrackIdle";
-    const label = track.label || t("audioTrackLabel", { n: track.index });
-    li.innerHTML = `
-      <span class="track-label">${label}</span>
-      <span class="track-meta">${t(originKey)} · ${t(stateKey)} · ${formatSeconds(track.duration_sec)}</span>
-    `;
+
+    const labelSpan = document.createElement("span");
+    labelSpan.className = "track-label";
+    labelSpan.textContent = track.label || t("audioTrackLabel", { n: track.index });
+
+    const metaSpan = document.createElement("span");
+    metaSpan.className = "track-meta";
+    metaSpan.textContent = `${t(originKey)} · ${t(stateKey)} · ${formatSeconds(track.duration_sec)}`;
+
+    li.appendChild(labelSpan);
+    li.appendChild(metaSpan);
     els.audioTrackList.appendChild(li);
   });
 }
@@ -741,10 +245,7 @@ function renderAudioTimeline(summary) {
     splitBtn.textContent = t("split");
     splitBtn.addEventListener("click", async () => {
       const ph = state.playheadSec;
-      const at =
-        ph > start + 0.05 && ph < end - 0.05
-          ? ph
-          : start + dur / 2;
+      const at = ph > start + 0.05 && ph < end - 0.05 ? ph : start + dur / 2;
       await mutate(() =>
         api("/api/audio", {
           method: "POST",
@@ -782,6 +283,143 @@ function renderAudioTimeline(summary) {
   });
 }
 
+function buildClipCard(clip) {
+  const card = document.createElement("article");
+  card.className = "clip-card" + (clip.index === state.selectedClip ? " is-selected" : "");
+  card.draggable = true;
+  card.dataset.index = String(clip.index);
+
+  const thumbWrap = document.createElement("div");
+  thumbWrap.className = "clip-thumb-wrap";
+  const thumb = document.createElement("img");
+  thumb.className = "clip-thumb";
+  const trimStart = clip.trim_start ?? clip.in_sec ?? 0;
+  thumb.src = `/api/clips/${clip.index}/thumbnail?v=${encodeURIComponent(trimStart)}`;
+  thumb.alt = "";
+  thumb.loading = "lazy";
+  thumb.draggable = false;
+  thumb.addEventListener("error", () => {
+    thumb.classList.add("is-missing");
+    thumb.removeAttribute("src");
+  });
+  thumbWrap.appendChild(thumb);
+
+  const title = document.createElement("h3");
+  title.textContent = clip.title || t("clipTitle", { n: clip.index });
+
+  const dur = document.createElement("div");
+  dur.className = "duration";
+  dur.textContent = formatSeconds(clip.duration_sec);
+
+  const tags = document.createElement("div");
+  tags.className = "effect-tags";
+  const effectsList = clip.effects || [];
+  if (!effectsList.length) {
+    const emptyTag = document.createElement("span");
+    emptyTag.className = "tag";
+    emptyTag.textContent = t("noEffects");
+    tags.appendChild(emptyTag);
+  } else {
+    effectsList.forEach((effect) => {
+      if (!["zoom", "text", "blur"].includes(effect.type)) return;
+      const tag = document.createElement("span");
+      tag.className = `tag ${effect.type}`;
+      const fallbackKey =
+        effect.type === "zoom"
+          ? "effectZoom"
+          : effect.type === "text"
+            ? "effectText"
+            : "effectBlur";
+      tag.textContent = effect.label || t(fallbackKey);
+      tags.appendChild(tag);
+    });
+  }
+
+  const actions = document.createElement("div");
+  actions.className = "clip-actions";
+
+  const splitBtn = document.createElement("button");
+  splitBtn.type = "button";
+  splitBtn.dataset.act = "split";
+  splitBtn.textContent = t("split");
+  splitBtn.addEventListener("click", async (ev) => {
+    ev.stopPropagation();
+    const at = Math.max(0.1, (clip.duration_sec || 1) / 2);
+    await mutate(() =>
+      api("/api/clips", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "split",
+          clip_index: clip.index,
+          split_at_sec: at,
+        }),
+      })
+    );
+  });
+
+  const removeBtn = document.createElement("button");
+  removeBtn.type = "button";
+  removeBtn.className = "danger";
+  removeBtn.dataset.act = "remove";
+  removeBtn.textContent = t("remove");
+  removeBtn.addEventListener("click", async (ev) => {
+    ev.stopPropagation();
+    await mutate(() =>
+      api("/api/clips", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "remove", clip_index: clip.index }),
+      })
+    );
+  });
+
+  actions.appendChild(splitBtn);
+  actions.appendChild(removeBtn);
+
+  card.appendChild(thumbWrap);
+  card.appendChild(title);
+  card.appendChild(dur);
+  card.appendChild(tags);
+  card.appendChild(actions);
+
+  card.addEventListener("click", (ev) => {
+    if (ev.target.closest("button")) return;
+    state.selectedClip = clip.index;
+    renderClipStrip();
+  });
+
+  card.addEventListener("dragstart", (ev) => {
+    card.classList.add("is-dragging");
+    ev.dataTransfer.setData("text/plain", String(clip.index));
+    ev.dataTransfer.effectAllowed = "move";
+  });
+  card.addEventListener("dragend", () => card.classList.remove("is-dragging"));
+  card.addEventListener("dragover", (ev) => {
+    ev.preventDefault();
+    ev.dataTransfer.dropEffect = "move";
+  });
+  card.addEventListener("drop", async (ev) => {
+    ev.preventDefault();
+    const from = Number(ev.dataTransfer.getData("text/plain"));
+    const to = clip.index;
+    if (!from || from === to) return;
+    await mutate(() =>
+      api("/api/clips", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "move",
+          from_index: from,
+          to_index: to,
+        }),
+      })
+    );
+  });
+
+  return card;
+}
+
 function renderClipStrip() {
   const clips = state.summary?.clips || [];
   els.clipStrip.innerHTML = "";
@@ -797,116 +435,7 @@ function renderClipStrip() {
   const labels = transitionLabels();
 
   clips.forEach((clip, idx) => {
-    const card = document.createElement("article");
-    card.className = "clip-card" + (clip.index === state.selectedClip ? " is-selected" : "");
-    card.draggable = true;
-    card.dataset.index = String(clip.index);
-
-    const effects = (clip.effects || [])
-      .map((effect) => {
-        if (effect.type === "zoom") {
-          return `<span class="tag zoom">${effect.label || t("effectZoom")}</span>`;
-        }
-        if (effect.type === "text") {
-          return `<span class="tag text">${effect.label || t("effectText")}</span>`;
-        }
-        if (effect.type === "blur") {
-          return `<span class="tag blur">${effect.label || t("effectBlur")}</span>`;
-        }
-        return "";
-      })
-      .join("");
-
-    const trimStart = clip.trim_start ?? clip.in_sec ?? 0;
-    const thumbUrl = `/api/clips/${clip.index}/thumbnail?v=${encodeURIComponent(trimStart)}`;
-    card.innerHTML = `
-      <div class="clip-thumb-wrap">
-        <img
-          class="clip-thumb"
-          src="${thumbUrl}"
-          alt=""
-          loading="lazy"
-          draggable="false"
-        />
-      </div>
-      <h3>${clip.title || t("clipTitle", { n: clip.index })}</h3>
-      <div class="duration">${formatSeconds(clip.duration_sec)}</div>
-      <div class="effect-tags">${effects || `<span class="tag">${t("noEffects")}</span>`}</div>
-      <div class="clip-actions">
-        <button type="button" data-act="split">${t("split")}</button>
-        <button type="button" class="danger" data-act="remove">${t("remove")}</button>
-      </div>
-    `;
-    const thumb = card.querySelector(".clip-thumb");
-    if (thumb) {
-      thumb.addEventListener("error", () => {
-        thumb.classList.add("is-missing");
-        thumb.removeAttribute("src");
-      });
-    }
-
-    card.addEventListener("click", (ev) => {
-      if (ev.target.closest("button")) return;
-      state.selectedClip = clip.index;
-      renderClipStrip();
-    });
-
-    card.querySelector('[data-act="remove"]').addEventListener("click", async (ev) => {
-      ev.stopPropagation();
-      await mutate(() =>
-        api("/api/clips", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ action: "remove", clip_index: clip.index }),
-        })
-      );
-    });
-
-    card.querySelector('[data-act="split"]').addEventListener("click", async (ev) => {
-      ev.stopPropagation();
-      const at = Math.max(0.1, (clip.duration_sec || 1) / 2);
-      await mutate(() =>
-        api("/api/clips", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            action: "split",
-            clip_index: clip.index,
-            split_at_sec: at,
-          }),
-        })
-      );
-    });
-
-    card.addEventListener("dragstart", (ev) => {
-      card.classList.add("is-dragging");
-      ev.dataTransfer.setData("text/plain", String(clip.index));
-      ev.dataTransfer.effectAllowed = "move";
-    });
-    card.addEventListener("dragend", () => card.classList.remove("is-dragging"));
-    card.addEventListener("dragover", (ev) => {
-      ev.preventDefault();
-      ev.dataTransfer.dropEffect = "move";
-    });
-    card.addEventListener("drop", async (ev) => {
-      ev.preventDefault();
-      const from = Number(ev.dataTransfer.getData("text/plain"));
-      const to = clip.index;
-      if (!from || from === to) return;
-      await mutate(() =>
-        api("/api/clips", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            action: "move",
-            from_index: from,
-            to_index: to,
-          }),
-        })
-      );
-    });
-
-    els.clipStrip.appendChild(card);
+    els.clipStrip.appendChild(buildClipCard(clip));
 
     if (idx < clips.length - 1) {
       const slot = document.createElement("div");
@@ -1017,12 +546,6 @@ async function runRender(mode) {
   }
 }
 
-function showReply(text) {
-  state.lastReply = text;
-  els.commandReply.hidden = false;
-  els.commandReply.textContent = text;
-}
-
 async function uploadFile(file) {
   const form = new FormData();
   form.append("file", file);
@@ -1057,40 +580,11 @@ function wireDropTarget(element) {
   });
 }
 
-function mapTimeToClip(timeSec) {
-  const clips = state.summary?.clips || [];
-  let cursor = 0;
-  const transitions = state.summary?.transitions || [];
-  for (let i = 0; i < clips.length; i++) {
-    const clip = clips[i];
-    const start = cursor;
-    const end = cursor + clip.duration_sec;
-    if (timeSec >= start && timeSec <= end + 1e-6) {
-      return {
-        clipIndex: clip.index,
-        localSec: Math.max(0, timeSec - start),
-        clip,
-      };
-    }
-    cursor = end;
-    const tr = transitions.find((item) => item.after_clip === clip.index);
-    if (tr && i < clips.length - 1) {
-      cursor -= tr.duration_sec;
-    }
-  }
-  if (clips.length) {
-    const last = clips[clips.length - 1];
-    return { clipIndex: last.index, localSec: 0, clip: last };
-  }
-  return null;
-}
-
 async function addZoomAtClick(ev) {
   if (!state.summary?.clips?.length || !els.preview.src) return;
   const rect = els.preview.getBoundingClientRect();
   if (ev.clientY > rect.bottom - 48) return;
 
-  // Suhteelliset 0..1 -koordinaatit: toimivat preview- ja full-resoluutiossa samoin
   const x = (ev.clientX - rect.left) / rect.width;
   const y = (ev.clientY - rect.top) / rect.height;
   if (x < 0 || x > 1 || y < 0 || y > 1) return;
@@ -1219,7 +713,6 @@ function applyLanguage(lang) {
   applyDomTranslations();
   syncLangButtons();
   if (state.summary) {
-    // Päivitä dynaamiset UI-merkkijonot heti; serverin description haetaan perään
     applyState(state.summary);
   }
   refreshState()
@@ -1291,7 +784,6 @@ function wireEvents() {
   });
 
   els.preview.addEventListener("click", (e) => {
-    // Still pois heti kun käyttäjä klikkaa videota / kontrollia
     if (state.stillMode || isActivelyScrubbing()) {
       hideStillAndSyncVideo();
     }
@@ -1322,97 +814,7 @@ function wireEvents() {
     }
   });
 
-  if (els.scrubberClear) {
-    els.scrubberClear.addEventListener("click", (e) => {
-      e.preventDefault();
-      e.stopPropagation();
-      clearSelectionUiAndServer();
-    });
-  }
-
-  if (els.scrubberTrack) {
-    const beginSelect = (e, mode) => {
-      if (!totalDuration()) return;
-      e.preventDefault();
-      e.stopPropagation();
-      state.selecting = true;
-      state.scrubbing = false;
-      state.selectMode = mode;
-      const tip = secFromPointerEvent(e);
-      if (mode === "paint") {
-        state.selectAnchor = tip;
-        updateSelectionUi(tip, tip);
-      }
-      els.scrubberTrack.setPointerCapture?.(e.pointerId);
-      paintSelectionTo(tip, { immediate: true, edgeSec: tip });
-    };
-
-    const onPointerDown = (e) => {
-      if (!totalDuration()) return;
-      if (e.target === els.scrubberHandleStart) {
-        beginSelect(e, "start");
-        return;
-      }
-      if (e.target === els.scrubberHandleEnd) {
-        beginSelect(e, "end");
-        return;
-      }
-      if (e.shiftKey) {
-        beginSelect(e, "paint");
-        return;
-      }
-      e.preventDefault();
-      state.scrubbing = true;
-      state.selecting = false;
-      state.selectMode = null;
-      els.scrubberTrack.setPointerCapture?.(e.pointerId);
-      scrubTo(secFromPointerEvent(e), { immediate: true });
-    };
-    const onPointerMove = (e) => {
-      if (state.selecting) {
-        paintSelectionTo(secFromPointerEvent(e));
-        return;
-      }
-      if (!state.scrubbing) return;
-      scrubTo(secFromPointerEvent(e));
-    };
-    const onPointerUp = (e) => {
-      if (state.selecting) {
-        paintSelectionTo(secFromPointerEvent(e), { immediate: true });
-        state.selecting = false;
-        state.selectMode = null;
-        state.selectAnchor = null;
-        hideStillAndSyncVideo();
-        return;
-      }
-      if (!state.scrubbing) return;
-      scrubTo(secFromPointerEvent(e), { immediate: true });
-      state.scrubbing = false;
-      hideStillAndSyncVideo();
-    };
-    els.scrubberTrack.addEventListener("pointerdown", onPointerDown);
-    els.scrubberTrack.addEventListener("pointermove", onPointerMove);
-    els.scrubberTrack.addEventListener("pointerup", onPointerUp);
-    els.scrubberTrack.addEventListener("pointercancel", onPointerUp);
-    els.scrubberTrack.addEventListener("keydown", (e) => {
-      const total = totalDuration();
-      if (!total) return;
-      if (e.key === "Escape") {
-        e.preventDefault();
-        clearSelectionUiAndServer();
-        return;
-      }
-      const step = e.shiftKey ? 1 : 0.1;
-      let next = state.playheadSec;
-      if (e.key === "ArrowLeft") next -= step;
-      else if (e.key === "ArrowRight") next += step;
-      else if (e.key === "Home") next = 0;
-      else if (e.key === "End") next = total;
-      else return;
-      e.preventDefault();
-      scrubTo(next, { immediate: true });
-    });
-  }
+  wireScrubberEvents();
 
   document.querySelectorAll("[data-quick]").forEach((btn) => {
     btn.addEventListener("click", () => {

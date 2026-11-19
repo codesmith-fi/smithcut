@@ -1,44 +1,50 @@
 # SPEC: CutSmith – Paikallinen AI-avusteinen FFmpeg-videoeditori
 
 ## 1. Yleiskuvaus ja tavoite
-CutSmith on paikallinen, deterministinen videoeditointityökalu, joka yhdistää FFmpeg-suodatingraafit, FastMCP-työkalurajapinnan ja paikallisen kielimallin (Ollama / `qwen3:8b`, 8 Gt VRAM). Käyttäjä ohjaa leikkauksia, siirtymiä, zoomauksia ja tekstityksiä luonnollisella kielellä tai suoraan MCP-työkalukutsuilla ilman pilvipalveluita tai raskaita GUI-editoreita.
+CutSmith on paikallinen, ei-tuhoava ja deterministinen videoeditointityökalu, joka yhdistää FFmpeg-suodatingraafit, MCP-työkalurajapinnan ja paikallisen kielimallin (Ollama / `qwen3:8b`). Käyttäjä ohjaa leikkauksia, siirtymiä, zoomauksia, sumennuksia, tekstityksiä sekä erillistä ääniaikajanaa luonnollisella kielellä (FI/EN), selainkäyttöliittymällä tai suoraan MCP-työkalukutsuilla ilman pilvipalveluita.
 
 ## 2. Arkkitehtuuri (tiukka MVC-jaottelu)
-- **Model (`model/`):** Puhdas Pydantic v2 -datamalli (`Timeline`), joka kuvaa projektin tilan deterministisenä JSON-rakenteena. Ei FFmpeg-, aliprosessi- tai UI-riippuvuuksia. Sisältää `HistoryManager`-luokan (Undo/Redo-tilannekuvat).
-- **Compiler (`compiler/`):** Lukee `Timeline`-olion, validoi aikaleimat ja kääntää sen deterministiseksi FFmpeg `filter_complex` -komennoksi. Pakottaa aina ympäristömuuttujan `LC_ALL=C` kaikissa aliprosesseissa. Tukee kahta renderöintiprofiilia:
-  - `preview`: 1280x720, `h264_nvenc` (`-preset p1`), nopea esikatselu.
-  - `final`: Natiiviresoluutio (1920x1080 tai lähteen mukaan), korkealaatuinen enkoodaus (`h264_nvenc` `-cq 19` tai `libx264` `-crf 18`).
+- **Model (`model/`):**
+  - `timeline.py`: Puhdas Pydantic v2 -datamalli (`Timeline`, `VideoSource`, `Clip`, `ZoomEffect`, `TextEffect`, `BlurEffect`, `Transition`, `BackgroundMusic`, `AudioTrack`, `AudioClip`). Ei FFmpeg-, aliprosessi- tai UI-riippuvuuksia.
+  - `history.py`: `HistoryManager` (deterministinen Undo/Redo-tilannekuvapino syväkopioilla).
+- **Compiler (`compiler/`):**
+  - `ffprobe.py`: Metadatan luku video- ja äänitiedostoille (`LC_ALL=C`).
+  - `ffmpeg.py`: Kääntää `Timeline`-olion deterministiseksi FFmpeg `filter_complex` -komennoksi input-tason `-ss`/`-t`-haulla, pakottaa `LC_ALL=C`, lukee edistymisen `-progress pipe:1` -virrasta ja poimii still-ruudut, pikkukuvat sekä erotetut ääniraidat. Kaksi renderöintiprofiilia:
+    - `preview`: 480p (parillinen leveys kuvasuhteen mukaan, max 30 fps), `libx264` (`-preset ultrafast -crf 28`), nopea ja ennustettava esikatselu.
+    - `export` (`final`): Natiiviresoluutio ja natiivi FPS, korkealaatuinen enkoodaus (`h264_nvenc` `-preset p4 -cq 18` jos käytettävissä, muuten `libx264` `-preset medium -crf 18`).
 - **Controller (`controller/`):**
-  - `editor.py`: `EditorController` suorittaa atomiset editointioperaatiot `Timeline`-malliin ja tallentaa jokaisen muutoksen `HistoryManager`-pinoon.
-  - `mcp_server.py`: Altistaa `EditorController`-metodit FastMCP-työkaluina.
-  - `llm_agent.py`: Keskustelee paikallisen Ollama API:n (`http://localhost:11434/api/chat`) kanssa käyttäen tool calling -rajapintaa. Asettaa `"keep_alive": "15s"`, jotta VRAM vapautuu nopeasti NVENC-renderöinnille.
-- **View (`web/`):** Kevyt FastAPI-palvelin (`web/api.py`) ja yksisivuinen tumma HTML/JS-käyttöliittymä (`web/static/index.html`, `web/static/app.js`), jossa on HTML5 `<video>`-esikatselusoitin, visuaalinen klippilista/aikajana ID-numeroineen, prompt-chat, Undo/Redo-napit sekä Render Preview / Export Final -toiminnot.
+  - `editor.py`: Säieturvallinen (`RLock`) `EditorController`-fasadi, joka suorittaa atomiset editointioperaatiot `Timeline`-malliin ja tallentaa tilan automaattisesti `_persist_batch`-kontekstimanagerin kautta.
+  - `persistence.py`: Atominen `workspace/project_state.json` -tallennus/lataus ja `reset_project`-siivous.
+  - `media_cache.py`: Still-ruutujen ja klippi-pikkukuvien välimuistitus (`workspace/frames/`, `workspace/thumbnails/`).
+  - `summary.py`: Kaksikielinen (FI/EN) 1-pohjainen tilayhteenveto UI:lle ja kielimallille.
+- **Agent & MCP (`agent/`, `mcp_server/`):**
+  - `agent/tools.py`: Keskitetty työkalurekisteri (`OLLAMA_TOOLS`) ja `execute_tool`-suoritin yhdenmukaisilla 1-pohjaisilla indekseillä.
+  - `agent/llm_agent.py`: Paikallinen Ollama API (`/api/chat`) tool calling -silmukalla, monivuoroisella keskusteluhistorialla ja ympäristömuuttujilla (`CUTSMITH_MODEL`, `OLLAMA_HOST`, `CUTSMITH_KEEP_ALIVE`).
+  - `mcp_server/server.py`: Generoi MCP-työkalut automaattisesti `agent.tools.OLLAMA_TOOLS` -rekisteristä ilman duplikaatiota.
+- **View (`web/`):**
+  - `web/api.py`: FastAPI-palvelin striimaavalla tiedostolatauksella, HTTP Range -mediatarjoilulla (`is_relative_to`-polkusuojaus) ja staattisten tiedostojen `no-cache`-validointiväliohjelmistolla.
+  - `web/static/`: Modulaarinen tumma HTML/CSS/ES-moduulikäyttöliittymä (`index.html`, `style.css`, `i18n.js`, `state.js`, `api.js`, `scrubber.js`, `app.js`): HTML5 `<video>`-soitin, kaksiraitainen Aikajana (video + erotettu ääniraita samassa aikaskaalassa, yhteinen playhead ja `Shift+raahaus`-aluevalinta), klippinauha siirtymävalitsimineen, ääniklippien pikatoiminnot, prompt-chat, Undo/Redo sekä Export Final.
 
 ## 3. Datamalli (`model/timeline.py`)
-- `VideoSource`: `id: str`, `path: str`, `duration: float`, `width: int`, `height: int`, `fps: float`, `has_audio: bool`
-- `ZoomEffect`: `type: Literal["zoom"] = "zoom"`, `start_sec: float`, `duration: float`, `target_x: float` (0.0–1.0), `target_y: float` (0.0–1.0), `zoom_factor: float` (1.1–4.0)
-- `TextEffect`: `type: Literal["text"] = "text"`, `text: str`, `start_sec: float`, `duration: float`, `position: Literal["bottom", "top", "center"] = "bottom"`, `font_size: int = 36`, `color: str = "white"`
-- `Clip`: `id: str`, `source_id: str`, `in_sec: float`, `out_sec: float`, `speed: float = 1.0`, `effects: list[ZoomEffect | TextEffect] = []`
-- `Transition`: `after_clip_index: int`, `type: Literal["fadeblack", "fade", "wipeleft", "wiperight"] = "fadeblack"`, `duration: float = 0.4`
-- `BackgroundMusic`: `path: str`, `bgm_volume: float = 0.85`, `sfx_volume: float = 0.35`, `fade_out_sec: float = 2.0`
-- `Timeline`: `sources: dict[str, VideoSource]`, `clips: list[Clip]`, `transitions: list[Transition]`, `bgm: Optional[BackgroundMusic]`, `output_fps: int = 60`
+- `VideoSource`: `id`, `path`, `duration`, `width`, `height`, `fps`, `has_audio`
+- `ZoomEffect`: `type="zoom"`, `start_sec`, `duration`, `target_x` (0–1), `target_y` (0–1), `zoom_factor` (1.1–4.0)
+- `TextEffect`: `type="text"`, `text`, `start_sec`, `duration`, `position` (`bottom|top|center`), `font_size`, `color`, `font_style` (`clean|cinema|mono|impact`)
+- `BlurEffect`: `type="blur"`, `start_sec`, `end_sec`, `max_sigma`, `fade_sec`
+- `Clip`: `id`, `source_id`, `in_sec`, `out_sec`, `speed`, `effects: list[ZoomEffect | TextEffect | BlurEffect]`
+- `Transition`: `after_clip_index`, `type` (`fadeblack|fade|wipeleft|wiperight`), `duration`
+- `BackgroundMusic`: `path`, `bgm_volume`, `sfx_volume`, `fade_out_sec`
+- `AudioTrack`: `id`, `path`, `duration`, `origin` (`extracted|imported`), `source_video_id`
+- `AudioClip`: `id`, `source_path`, `in_point`, `out_point`, `timeline_start`, `volume`, `fade_in_sec`, `fade_out_sec`
+- `Timeline`: `sources`, `clips`, `transitions`, `bgm`, `mute_video_audio`, `audio_tracks`, `active_audio_track_id`, `active_audio_start_sec`, `audio_clips`, `fade_in_sec`, `fade_out_sec`, `fade_audio`, `output_fps`
 
-## 4. Controller- ja MCP-työkalut (`controller/editor.py`)
-1. `import_video(file_path: str) -> VideoSource`
-2. `add_clip(source_id: str, start_sec: float, end_sec: float, insert_at: int | None = None) -> Clip`
-3. `trim_clip(clip_index: int, start_sec: float, end_sec: float) -> Clip`
-4. `split_clip(clip_index: int, split_at_sec: float) -> tuple[Clip, Clip]`
-5. `remove_clip(clip_index: int) -> None`
-6. `set_transition(after_clip_index: int, transition_type: str = "fadeblack", duration: float = 0.4) -> Transition`
-7. `add_zoom(clip_index: int, start_sec: float, duration: float, region: str = "center", target_x: float | None = None, target_y: float | None = None, zoom_factor: float = 1.8) -> ZoomEffect`
-8. `add_text(clip_index: int, text: str, start_sec: float, duration: float, position: str = "bottom") -> TextEffect`
-9. `set_music(file_path: str, bgm_volume: float = 0.85, sfx_volume: float = 0.35, fade_out_sec: float = 2.0) -> BackgroundMusic`
-10. `undo() -> bool` / `redo() -> bool`
-11. `get_state_summary() -> dict` (palauttaa tiiviin yhteenvedon klipeistä, indekseistä, kestoista ja efekteistä LLM:ää ja UI:ta varten)
-12. `render(mode: str = "preview") -> str` (palauttaa renderöidyn videotiedoston polun)
+## 4. Controller-, Agent- ja MCP-työkalut (1-pohjaiset indeksit ulkoisessa rajapinnassa)
+1. **Perusleikkaus:** `get_state`, `add_clip`, `trim_clip`, `split_clip`, `remove_clip`, `move_clip`, `cut_timeline_range`
+2. **Siirtymät ja tehosteet:** `set_transition`, `remove_transition`, `apply_crossfade_to_selection`, `add_zoom`, `add_text`, `add_blur_to_selection`, `set_timeline_fades`
+3. **Ääniraidat ja erillinen ääniaikajana (J/L-cut):** `set_music`, `remove_video_audio`, `attach_audio_track`, `detach_audio_to_timeline`, `split_audio_clip`, `cut_audio_range`, `move_audio_clip`, `set_audio_clip_volume`
+4. **Historia ja projektinhallinta:** `undo`, `redo`, `reset_project`
 
-## 5. Toteutusvaiheet (suorita yksi vaihe kerrallaan)
-- **Vaihe 1 (Core & Compiler):** Toteuta `model/timeline.py`, `model/history.py`, `compiler/ffprobe.py`, `compiler/ffmpeg.py` ja `controller/editor.py`. Kirjoita kattavat `pytest`-yksikkötestit (`tests/`), jotka testaavat aikajanan rakentamisen, validoinnin, undo/redo-toiminnot sekä 3 klipin `xfade` + `zoompan` + `drawtext` -suodatingraafin generoinnin.
-- **Vaihe 2 (Web UI & API):** Toteuta `web/api.py` (FastAPI) ja `web/static/index.html` + `app.js`. Käyttöliittymässä näkyy esikatseluvideo, aikajanan klipit indekseineen (`#0`, `#1`, `#2`...), efektit, Undo/Redo, Render Preview / Export Final -napit sekä tekstikenttä komennoille.
-- **Vaihe 3 (Paikallinen Qwen + MCP):** Toteuta `controller/llm_agent.py` (Ollama `qwen3:8b` tool calling) ja `controller/mcp_server.py` (FastMCP). Kytke prompt-kenttä kutsumaan paikallista Qwen-agenttia, joka suorittaa työkalukutsut ja laukaisee esikatselun renderöinnin.
-- **Vaihe 4 (Visuaalinen kohdistus - VLM):** Lisää avainruutujen poiminta ja valinnainen paikallinen VLM-kysely, jolla ruudulla näkyvien UI-elementtien koordinaatit voidaan paikantaa nimeltä.
+## 5. Toteutusvaiheet ja tilanne
+- **Vaihe 1 (Core & Compiler):** Valmis (`model/`, `compiler/`, `controller/` + kattava `pytest`-testipaketti).
+- **Vaihe 2 (Web UI & API):** Valmis (`web/api.py`, kaksikielinen FI/EN modulaarinen Web UI, kaksiraitainen Aikajana, aluevalinta, still-scrubbaus).
+- **Vaihe 3 (Paikallinen Qwen + MCP):** Valmis (`agent/llm_agent.py`, keskitetty `agent/tools.py`, dynaamisesti generoitu `mcp_server/server.py`, monivuoroinen keskusteluhistoria).
+- **Vaihe 4 (Visuaalinen kohdistus – VLM, suunnitteilla):** Avainruutujen poiminta (`extract_still_frame`) on jo toteutettu; seuraavana valinnainen paikallinen VLM-kysely (esim. `qwen2.5vl`), jolla ruudulla näkyvien elementtien koordinaatit voidaan paikantaa nimeltä suoraan zoom- ja tekstikomennoissa.
