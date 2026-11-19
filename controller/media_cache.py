@@ -24,8 +24,9 @@ def cached_still_frame(
 ) -> Path:
     """Palauta välimuistitettu still-JPEG aikajanan kohdasta."""
     mtime = _file_mtime(source_path)
+    scale_part = f"|{scale}" if scale != "960:-1" else ""
     digest = hashlib.sha256(
-        f"{source_path.resolve()}|{mtime:.6f}|{source_ts:.3f}".encode()
+        f"{source_path.resolve()}|{mtime:.6f}|{source_ts:.3f}{scale_part}".encode()
     ).hexdigest()[:16]
     frames_dir = Path(workspace) / "frames"
     frames_dir.mkdir(parents=True, exist_ok=True)

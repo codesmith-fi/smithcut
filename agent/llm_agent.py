@@ -16,11 +16,14 @@ load_dotenv()
 from agent.tools import OLLAMA_TOOLS, execute_tool
 from controller.editor import EditorController, normalize_lang
 
-_THINK_TAG_RE = re.compile(r"<think>.*?</think>|</?think>", re.DOTALL)
+_THINK_BLOCK_RE = re.compile(r"<think>.*?</think>", re.DOTALL | re.IGNORECASE)
+_OPEN_THINK_RE = re.compile(r"<think>.*$", re.DOTALL | re.IGNORECASE)
+_CLOSE_THINK_RE = re.compile(r"</think>", re.IGNORECASE)
 
 DEFAULT_OLLAMA_URL = "http://localhost:11434"
 DEFAULT_MODEL = "qwen3:8b"
 KEEP_ALIVE = "5m"
+DEFAULT_NUM_CTX = 8192  # Estää 40k kontekstin vuotamisen CPU:lle 8 Gt VRAM -kortilla
 MAX_TOOL_ROUNDS = 8
 MAX_HISTORY_MESSAGES = 10  # 5 viimeisintä käyttäjä/assistentti-vuoroa
 
@@ -35,6 +38,7 @@ _ERROR_I18N = {
         ),
         "failed": "Kielimallin kutsu epäonnistui: {detail}",
         "empty": "En saanut vastausta kielimallilta. Kokeile uudelleen.",
+        "done": "Muutos tehty.",
     },
     "en": {
         "unreachable": (
@@ -46,6 +50,7 @@ _ERROR_I18N = {
         ),
         "failed": "Language model request failed: {detail}",
         "empty": "No reply from the language model. Please try again.",
+        "done": "Done.",
     },
 }
 
@@ -67,8 +72,21 @@ class AgentError(Exception):
 
 
 def strip_think_tags(reply: str) -> str:
-    """Poista Qwen3:n <think>...</think> -jäänteet käyttäjävastauksesta."""
-    return _THINK_TAG_RE.sub("", reply or "").strip()
+    """Poista Qwen3:n <think>...</think> -päättelylohkot (myös sulkemattomat)."""
+    text = reply or ""
+    # 1) Poista täydet <think>...</think> -lohkot
+    text = _THINK_BLOCK_RE.sub("", text)
+    # 2) Jos pelkkä </think> jäi (esim. avaustagi puuttui), ota teksti sen jälkeen
+    if _CLOSE_THINK_RE.search(text):
+        parts = _CLOSE_THINK_RE.split(text)
+        after = parts[-1].strip()
+        if after:
+            text = after
+        else:
+            text = "".join(parts[:-1])
+    # 3) Poista sulkematta jäänyt <think>... loppuun asti
+    text = _OPEN_THINK_RE.sub("", text)
+    return text.strip()
 
 
 def _model_name() -> str:
@@ -77,6 +95,18 @@ def _model_name() -> str:
 
 def _keep_alive() -> str:
     return os.environ.get("CUTSMITH_KEEP_ALIVE", KEEP_ALIVE)
+
+
+def _num_ctx() -> int:
+    raw = os.environ.get("CUTSMITH_NUM_CTX")
+    if raw:
+        try:
+            val = int(raw)
+            if val >= 2048:
+                return val
+        except ValueError:
+            pass
+    return DEFAULT_NUM_CTX
 
 
 def _ollama_base() -> str:
@@ -158,6 +188,14 @@ def _system_prompt(lang: str, state_summary: dict[str, Any]) -> str:
         "When the user asks for a soft blur transition on the selected range "
         "('Tee valitulle alueelle pehmeä blur-siirtymä' / "
         "'Add a soft blur to the selected range'), call add_blur_to_selection.\n"
+        "Visual targeting (VLM): when the user asks to zoom into or target a "
+        "specific visible object, person, ship, text, or UI element in the video "
+        "(e.g. 'zoomaa alukseen', 'zoomaa punaiseen ruusuun kohdassa 2:30', "
+        "'zoom into the menu button'), call locate_object_in_frame(query=..., "
+        "at_sec=...) FIRST to find its normalized coordinates. If found=true, "
+        "pass the returned target_x and target_y directly to add_zoom. If "
+        "found=false, explain clearly that the object was not found instead of "
+        "guessing coordinates.\n"
         "Time codes: interpret marks like 2:20 or 2.20 (when minute/second "
         "context is clear) as MM:SS → seconds (2*60+20 = 140.0 s). Do not treat "
         "2.20 as 2.2 decimal seconds in that case.\n"
@@ -244,6 +282,8 @@ def _chat_once(
         "keep_alive": _keep_alive(),
         # Qwen3: kytke sisäinen ajatteluketju pois (nopeampi tool calling)
         "think": False,
+        # Rajaa konteksti 8192 tokeniin → mahtuu 100 % 8 Gt VRAMiin (ei CPU-vuotoa)
+        "options": {"num_ctx": _num_ctx()},
     }
     try:
         response = client.post(f"{_ollama_base()}/api/chat", json=payload)
@@ -331,7 +371,7 @@ def run_agent(
             content = strip_think_tags(msg.get("content") or "")
             if not content:
                 return AgentResult(
-                    reply=strings["empty"],
+                    reply=strings["done"] if changed else strings["empty"],
                     changed=changed,
                     ready=True,
                     tool_calls=used_tools,

@@ -19,7 +19,12 @@ def test_strip_think_tags():
         == "Lisäsin zoomin."
     )
     assert strip_think_tags("OK</think>") == "OK"
-    assert strip_think_tags("<think>only") == "only"
+    assert (
+        strip_think_tags("Okay the user wants to zoom...\n</think>\nLisäsin zoomin.")
+        == "Lisäsin zoomin."
+    )
+    assert strip_think_tags("<think>unclosed english reasoning") == ""
+    assert strip_think_tags("Valmis.<think>trailing reasoning") == "Valmis."
     assert strip_think_tags("  clean  ") == "clean"
 
 
@@ -73,7 +78,8 @@ def test_execute_tool_add_text_and_zoom_1_based():
     assert "zoom" in zoom
 
 
-def test_run_agent_tool_then_reply():
+def test_run_agent_tool_then_reply(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.delenv("CUTSMITH_KEEP_ALIVE", raising=False)
     editor = _editor_with_clip()
     responses = [
         {

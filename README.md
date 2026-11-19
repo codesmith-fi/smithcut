@@ -43,13 +43,16 @@ brew install ffmpeg python
 winget install Gyan.FFmpeg Python.Python.3.12
 ```
 
-### Local LLM Setup (Ollama)
+### Local LLM & Vision (VLM) Setup (Ollama)
 
-CutSmith is tested with the local **Qwen3-8B** model:
+CutSmith is tested with the local **Qwen3-8B** model for editing commands, and optionally **Qwen2.5-VL 3B** for visual object targeting (locating objects/UI elements on screen for zoom):
 
 ```bash
-# Install Ollama (https://ollama.com) and pull the model:
+# Install Ollama (https://ollama.com) and pull the main editing model:
 ollama pull qwen3:8b
+
+# Optional: pull the local vision model (VLM) for object-targeted zoom:
+ollama pull qwen2.5vl:3b
 ```
 
 ---
@@ -76,7 +79,7 @@ ollama pull qwen3:8b
    ```
 
 4. **Configure environment variables (optional):**
-   Copy `.env.example` to `.env` to customize `OLLAMA_HOST`, `CUTSMITH_MODEL`, or `CUTSMITH_KEEP_ALIVE` (e.g. `15s` on 8 GB VRAM GPUs to free memory before NVENC export):
+   Copy `.env.example` to `.env` to customize `OLLAMA_HOST`, `CUTSMITH_MODEL`, `CUTSMITH_KEEP_ALIVE` (e.g. `15s` on 8 GB VRAM GPUs to free memory before NVENC export), `CUTSMITH_VLM_MODEL` (default `qwen2.5vl:3b`), or `CUTSMITH_VLM_KEEP_ALIVE` (default `0` to unload VLM immediately after locating an object):
    ```bash
    cp .env.example .env
    ```
@@ -121,6 +124,8 @@ Open **[http://localhost:8000](http://localhost:8000)** in your browser.
    - *"Erota videosta ääni omalle raidalleen"* → cut/move audio alone (*"Siirrä ääniklippi 2 alkamaan kohdasta 0:08"*, *"Laske ääniraidan voimakkuus puoleen"*).
 7. **Timeline Fade In / Out:**
    - *"Tee videon alkuun 5 sekunnin fade in ja videon loppuun sama 5 sekunnin fade out"* or *"Lisää 3 sekunnin loppuhäivytys"*.
+8. **Visual Object Targeting (VLM):**
+   - Requires `ollama pull qwen2.5vl:3b`. Ask CutSmith to zoom into a visible object or UI element by name: *"Zoomaa alukseen"* or *"Zoom into the red rose at 2:30"*.
 
 ---
 

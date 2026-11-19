@@ -57,6 +57,7 @@ function statusFromProgress(progress) {
   if (!progress || !progress.active) return t("ready");
   const phase = progress.phase;
   const pct = progress.percent;
+  if (phase === "vision") return t("analyzingFrameVlm");
   if (phase === "chat") return t("processingCommandQwen");
   if (phase === "export") {
     return pct == null ? t("creatingFinal") : t("creatingFinalPct", { percent: pct });
@@ -73,7 +74,7 @@ export function applyProgress(progress) {
     return;
   }
   setStatus(statusFromProgress(progress), true);
-  if (progress.phase === "chat" || progress.percent == null) {
+  if (progress.phase === "chat" || progress.phase === "vision" || progress.percent == null) {
     setProgressBar(-1);
   } else {
     setProgressBar(progress.percent);

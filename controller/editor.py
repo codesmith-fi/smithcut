@@ -1095,7 +1095,7 @@ class EditorController:
         source_ts = min(max(clip.in_sec, source_ts), clip.out_sec)
         return i, source_ts
 
-    def get_frame_at_time(self, sec: float) -> Path:
+    def get_frame_at_time(self, sec: float, *, scale: str = "960:-1") -> Path:
         """Poimi still-JPEG aikajanan kohdasta (välimuisti workspace/frames/)."""
         with self._lock:
             located = self.locate_timeline_sec(sec)
@@ -1111,7 +1111,7 @@ class EditorController:
             source_path,
             source_ts,
             extractor=extract_still_frame,
-            scale="960:-1",
+            scale=scale,
         )
 
     def _effects_for_subclip(

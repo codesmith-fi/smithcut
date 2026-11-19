@@ -20,6 +20,7 @@ CutSmith on paikallinen, ei-tuhoava ja deterministinen videoeditointityökalu, j
 - **Agent & MCP (`agent/`, `mcp_server/`):**
   - `agent/tools.py`: Keskitetty työkalurekisteri (`OLLAMA_TOOLS`) ja `execute_tool`-suoritin yhdenmukaisilla 1-pohjaisilla indekseillä.
   - `agent/llm_agent.py`: Paikallinen Ollama API (`/api/chat`) tool calling -silmukalla, monivuoroisella keskusteluhistorialla ja ympäristömuuttujilla (`CUTSMITH_MODEL`, `OLLAMA_HOST`, `CUTSMITH_KEEP_ALIVE`).
+  - `agent/vision.py`: Paikallinen VLM-kohdistus (`CUTSMITH_VLM_MODEL`, `CUTSMITH_VLM_KEEP_ALIVE="0"`), joka paikantaa kohteet still-ruuduista normalisoituihin `(0..1, 0..1)`-koordinaatteihin.
   - `mcp_server/server.py`: Generoi MCP-työkalut automaattisesti `agent.tools.OLLAMA_TOOLS` -rekisteristä ilman duplikaatiota.
 - **View (`web/`):**
   - `web/api.py`: FastAPI-palvelin striimaavalla tiedostolatauksella, HTTP Range -mediatarjoilulla (`is_relative_to`-polkusuojaus) ja staattisten tiedostojen `no-cache`-validointiväliohjelmistolla.
@@ -47,4 +48,4 @@ CutSmith on paikallinen, ei-tuhoava ja deterministinen videoeditointityökalu, j
 - **Vaihe 1 (Core & Compiler):** Valmis (`model/`, `compiler/`, `controller/` + kattava `pytest`-testipaketti).
 - **Vaihe 2 (Web UI & API):** Valmis (`web/api.py`, kaksikielinen FI/EN modulaarinen Web UI, kaksiraitainen Aikajana, aluevalinta, still-scrubbaus).
 - **Vaihe 3 (Paikallinen Qwen + MCP):** Valmis (`agent/llm_agent.py`, keskitetty `agent/tools.py`, dynaamisesti generoitu `mcp_server/server.py`, monivuoroinen keskusteluhistoria).
-- **Vaihe 4 (Visuaalinen kohdistus – VLM, suunnitteilla):** Avainruutujen poiminta (`extract_still_frame`) on jo toteutettu; seuraavana valinnainen paikallinen VLM-kysely (esim. `qwen2.5vl`), jolla ruudulla näkyvien elementtien koordinaatit voidaan paikantaa nimeltä suoraan zoom- ja tekstikomennoissa.
+- **Vaihe 4 (Visuaalinen kohdistus – VLM):** Valmis (`agent/vision.py` + `locate_object_in_frame`-työkalu agentissa ja MCP:ssä, oletusmalli `qwen2.5vl:3b`, `keep_alive="0"`).

@@ -13,6 +13,7 @@ const dictionaries = {
     creatingFinalPct: "Renderöidään valmista videota… {percent} %",
     processingCommand: "Käsitellään komentoa…",
     processingCommandQwen: "Käsitellään komentoa (Qwen3)…",
+    analyzingFrameVlm: "Analysoidaan kuvaa (VLM)…",
     finalReady: "Valmis video luotu",
     finalReadyReply:
       "Valmis video on valmis – voit avata sen esikatselusta tai workspace-kansiosta.",
@@ -120,6 +121,7 @@ const dictionaries = {
     creatingFinalPct: "Rendering final video… {percent}%",
     processingCommand: "Processing command…",
     processingCommandQwen: "Processing command (Qwen3)…",
+    analyzingFrameVlm: "Analyzing frame (VLM)…",
     finalReady: "Final video created",
     finalReadyReply:
       "Your final video is ready — open it from the preview or the workspace folder.",

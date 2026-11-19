@@ -134,6 +134,37 @@ OLLAMA_TOOLS: list[dict[str, Any]] = [
     {
         "type": "function",
         "function": {
+            "name": "locate_object_in_frame",
+            "description": (
+                "Use the local vision model (VLM) to locate a visible object or "
+                "UI element in a video frame and return normalized target_x/target_y "
+                "(0.0–1.0) for add_zoom. Pass at_sec (timeline seconds) or 1-based "
+                "clip_index; if both are omitted, the current playhead is used."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "What visible object, person, or UI element to locate.",
+                    },
+                    "at_sec": {
+                        "type": "number",
+                        "description": "Optional timeline timestamp in seconds.",
+                    },
+                    "clip_index": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "description": "Optional 1-based clip index (uses clip midpoint if at_sec omitted).",
+                    },
+                },
+                "required": ["query"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "add_text",
             "description": (
                 "Add on-screen text to a clip. clip_index is 1-based. "
@@ -627,6 +658,61 @@ def execute_tool(
                 zoom_factor=_opt_float(args, "zoom_factor", 1.8),
             )
             return _dump(effect), changed
+
+        if name == "locate_object_in_frame":
+            from agent.vision import locate_object_in_image
+
+            changed = False
+            query = str(args.get("query") or "").strip()
+            if not query:
+                raise ValueError("query must not be empty")
+
+            at_sec_arg = args.get("at_sec")
+            clip_idx_arg = args.get("clip_index")
+            if at_sec_arg is not None:
+                target_sec = max(0.0, float(at_sec_arg))
+            elif clip_idx_arg is not None:
+                zero = one_to_zero(clip_idx_arg, label="clip_index")
+                spans = editor.clip_spans()
+                if zero < 0 or zero >= len(spans):
+                    raise IndexError(
+                        f"clip_index {clip_idx_arg} out of range (1..{len(spans)})"
+                    )
+                _i, c_start, c_end = spans[zero]
+                target_sec = (c_start + c_end) / 2.0
+            else:
+                target_sec = float(editor.playhead_sec)
+
+            prev_progress = editor.get_progress()
+            editor.set_progress(
+                active=True,
+                phase="vision",
+                percent=None,
+                detail="Analyzing frame (VLM)",
+            )
+            try:
+                frame_path = editor.get_frame_at_time(target_sec, scale="640:-1")
+                vision_res = locate_object_in_image(frame_path, query)
+            finally:
+                if prev_progress.get("active"):
+                    editor.set_progress(
+                        active=True,
+                        phase=prev_progress.get("phase") or "chat",
+                        percent=prev_progress.get("percent"),
+                        detail=prev_progress.get("detail") or "",
+                    )
+                else:
+                    editor.clear_progress()
+            return _dump(
+                {
+                    "found": vision_res["found"],
+                    "target_x": vision_res["x"],
+                    "target_y": vision_res["y"],
+                    "confidence": vision_res["confidence"],
+                    "at_sec": round(target_sec, 3),
+                    "reason": vision_res["reason"],
+                }
+            ), changed
 
         if name == "add_text":
             effect = editor.add_text(
